@@ -28,6 +28,7 @@ SKILL.md 是**注入智能体上下文、让 agent 执行**的指令文档,不�
     - 开头:条件触发句("当要…时用" / "Use when…"),**别用第一人称**(I / we);两种开头都可。
     - 语言 + 顺序:**按用户更可能用哪种语言提问排** —— 中文域中文为主、英文短语附后;英文主导域(debug / PR / CI,提问常带英文报错 / API 名 / GitHub 术语)英文可前置。英文给触发**短语列表**,**不必逐句对译**中文;纯中文场景可省英文。
     - 格式:code span(``)标接口名;bold 只用于**单处强调消歧关键词**(如"单个 Operation"),别整句权重堆砌。
+    - **YAML 语法陷阱**:description 值含 `: `(冒号+空格)时**必须用引号包裹**(双引号 `"…"` 或单引号 `'…'`),否则 YAML 解析器将其误判为嵌套 mapping 报错(`Nested mappings are not allowed in compact mappings`)。例:`description: "当…时用。英文: develop/debug…"` ✓ / `description: 当…时用。英文: develop/debug…` ✗。安全做法:**description 一律加引号**,不管有没有冒号。
     - 长度:name 尽量短;frontmatter(name + description)**总是加载进 context** → 官方建议 **~100 词**(够触发即可,别长篇)。硬上限 name + description 共 1024 字符;简单 skill 几十字,多场景数百字,**超 ~600 警惕冗余**,反复裁仍超 → 考虑 skill 拆分(§5)。**下限**:再短也满足"① 条件触发句开头 ② 有重叠兄弟时给去向"。
     - 空间紧张砍切顺序:**必要开头句(不可砍)> 触发场景(主 + 次)> 关键 keyword > 负向路由(压缩到最短形式即兄弟全名,**不归零**)> 装饰形式(英文 / code span / 双语排序,可砍)**;真到极限,外路由全名 > 装饰形式。
   - **写什么(4 条)**:

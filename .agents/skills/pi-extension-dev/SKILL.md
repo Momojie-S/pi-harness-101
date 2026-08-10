@@ -1,6 +1,6 @@
 ---
 name: pi-extension-dev
-description: 当要开发或调试 pi 扩展、给扩展写设计文档、做架构决策（写 ADR）时用。英文: develop/debug a pi extension, write extension design doc, write ADR。凡是给本 repo 新增/修改 extension、写扩展的 design.md 或 ADR 都用，即使没明说。仅管 pi 扩展这个制品；写 skill 内容用 od-dev-writing-skills。
+description: "当要开发或调试 pi 扩展、给扩展写设计文档、做架构决策（写 ADR）时用。英文: develop/debug a pi extension, write extension design doc, write ADR。凡是给本 repo 新增/修改 extension、写扩展的 design.md 或 ADR 都用，即使没明说。仅管 pi 扩展这个制品；写 skill 内容用 od-dev-writing-skills。"
 ---
 
 # 开发 pi 扩展

@@ -4,7 +4,7 @@
 
 ## 红线约束（每次改动都必须遵守）
 
-1. **无构建步骤**：pi 通过 jiti 直接加载 TypeScript。改完代码用 `/reload` 热加载，**不要**引入 tsc / webpack 等编译流程。
+1. **无构建步骤（针对 pi 加载的资源）**：pi 通过 jiti 直接加载**扩展 / skill / prompt / theme** 的 TypeScript，改完用 `/reload` 热加载，**不要**引入 tsc / webpack 等编译流程。**独立应用**（如 `web-console/`）不在此限——它不被 pi 加载，而是消费 pi SDK，按自身 ADR 决定（见 `web-console/docs/design/adr/001-allow-build-step.md`）。
 2. **chrome-devtools-mcp 兼容性是硬约束**（见 ADR-002）：扩展的 52 个工具必须与 chrome-devtools-mcp 的工具名、参数、行为一一对应，不自创命名。
 3. **CDP 客户端统一用 `chrome-remote-interface`**（见 ADR-001），不引入 puppeteer / playwright 等替代库。
 4. **架构决策走 ADR 流程**：涉及范围 / 依赖 / 设计取舍的决策，先在 `extensions/chrome-devtools/docs/design/adr/` 记录，再实现。
@@ -16,6 +16,7 @@
 │   └── chrome-devtools/      # 核心扩展：52 个 CDP 工具（兼容 chrome-devtools-mcp）
 │       ├── index.ts          # 单文件入口
 │       └── docs/design/      # 设计文档 + ADR
+├── web-console/              # 独立 Node 应用：浏览器远程操作 pi（消费 pi SDK，允许构建，自带 docs/design/）
 ├── .agents/skills/           # 项目维护用 skill（开发本 repo 时按需加载）
 ├── skills/                   # 包对外发布的 skill（给安装本包的用户）
 ├── prompts/  themes/         # prompt 模板 / 自定义主题

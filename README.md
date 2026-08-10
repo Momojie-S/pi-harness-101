@@ -15,6 +15,7 @@
 
 ```
 ├── extensions/     # pi extensions (TypeScript)
+├── web-console/    # 浏览器远程操作 pi 的独立 Web 应用（允许构建）
 ├── skills/         # 自定义 skills
 ├── prompts/        # prompt templates
 ├── themes/         # 自定义主题

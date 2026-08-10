@@ -139,6 +139,13 @@ describe("loadConfig 端口优先级", () => {
 		writeProjectConfig(tmpRoot, -1);
 		expect(loadConfig(tmpRoot).port).toBe(DEFAULT_PORT);
 	});
+
+	it("HOME 与 USERPROFILE 均为空时不报错（兼容无 HOME 的 CI/Docker）", () => {
+		process.env.HOME = "";
+		process.env.USERPROFILE = "";
+		// 无任何配置 → 默认值；全局配置分支被跳过（homeDir 为空）
+		expect(loadConfig(tmpRoot).port).toBe(DEFAULT_PORT);
+	});
 });
 
 describe("CONFIG_DIR_NAME 同步护栏", () => {

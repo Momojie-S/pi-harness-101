@@ -1,6 +1,6 @@
 # Chrome DevTools Extension
 
-通过 CDP (Chrome DevTools Protocol) 控制已开启调试端口的 Chrome/Edge 浏览器。
+完全兼容 [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) 的 pi extension，实现无缝切换。
 
 ## 前提
 
@@ -25,79 +25,131 @@ chrome.exe --remote-debugging-port=9222
 | 3 | 全局配置 `~/.pi/agent/chrome-devtools.json` | 全局默认 |
 | 4 | 默认值 `19999` | 兜底 |
 
-配置文件格式：
+## 工具列表 (52 个)
 
-```json
-{
-  "port": 19999
-}
+与 chrome-devtools-mcp 完全一致的工具名称和参数。
+
+### Input automation (10)
+
+| Tool | 说明 |
+|------|------|
+| `click` | 点击元素 (uid) |
+| `drag` | 拖拽元素 |
+| `fill` | 填写单个表单 |
+| `fill_form` | 批量填写表单 |
+| `handle_dialog` | 处理弹窗 |
+| `hover` | 悬停元素 |
+| `press_key` | 按键/组合键 |
+| `type_text` | 输入文字 |
+| `upload_file` | 上传文件 |
+| `click_at` | 点击坐标 |
+
+### Navigation automation (6)
+
+| Tool | 说明 |
+|------|------|
+| `close_page` | 关闭页面 |
+| `list_pages` | 列出页面 |
+| `navigate_page` | 导航 (URL/前进/后退/刷新) |
+| `new_page` | 新建页面 |
+| `select_page` | 选择页面 |
+| `wait_for` | 等待文字出现 |
+
+### Emulation (2)
+
+| Tool | 说明 |
+|------|------|
+| `emulate` | 设备模拟 (视口/UA/颜色/网络/位置) |
+| `resize_page` | 调整页面大小 |
+
+### Performance (3)
+
+| Tool | 说明 |
+|------|------|
+| `performance_start_trace` | 开始性能追踪 |
+| `performance_stop_trace` | 停止性能追踪 |
+| `performance_analyze_insight` | 分析性能洞察 |
+
+### Network (2)
+
+| Tool | 说明 |
+|------|------|
+| `list_network_requests` | 列出网络请求 |
+| `get_network_request` | 获取请求详情 |
+
+### Debugging (8)
+
+| Tool | 说明 |
+|------|------|
+| `evaluate_script` | 执行 JavaScript |
+| `get_console_message` | 获取控制台消息 |
+| `list_console_messages` | 列出控制台消息 |
+| `take_screenshot` | 截图 |
+| `take_snapshot` | 获取 a11y tree 快照 |
+| `lighthouse_audit` | Lighthouse 审计 |
+| `screencast_start` | 开始录屏 |
+| `screencast_stop` | 停止录屏 |
+
+### Memory (12)
+
+| Tool | 说明 |
+|------|------|
+| `take_heapsnapshot` | 捕获堆快照 |
+| `close_heapsnapshot` | 关闭堆快照 |
+| `compare_heapsnapshots` | 比较堆快照 |
+| `get_heapsnapshot_details` | 获取快照详情 |
+| `get_heapsnapshot_summary` | 获取快照摘要 |
+| `get_heapsnapshot_class_nodes` | 获取类的实例 |
+| `get_heapsnapshot_dominators` | 获取支配树 |
+| `get_heapsnapshot_duplicate_strings` | 获取重复字符串 |
+| `get_heapsnapshot_edges` | 获取出边 |
+| `get_heapsnapshot_object_details` | 获取对象详情 |
+| `get_heapsnapshot_retainers` | 获取保留者 |
+| `get_heapsnapshot_retaining_paths` | 获取保留路径 |
+
+### Extensions (5)
+
+| Tool | 说明 |
+|------|------|
+| `install_extension` | 安装扩展 |
+| `list_extensions` | 列出扩展 |
+| `reload_extension` | 重载扩展 |
+| `trigger_extension_action` | 触发扩展动作 |
+| `uninstall_extension` | 卸载扩展 |
+
+### Third-party (2)
+
+| Tool | 说明 |
+|------|------|
+| `list_3p_developer_tools` | 列出第三方工具 |
+| `execute_3p_developer_tool` | 执行第三方工具 |
+
+### WebMCP (2)
+
+| Tool | 说明 |
+|------|------|
+| `list_webmcp_tools` | 列出 WebMCP 工具 |
+| `execute_webmcp_tool` | 执行 WebMCP 工具 |
+
+## 使用方式
+
+### 基本流程
+
+1. 先调用 `take_snapshot` 获取页面快照和元素 uid
+2. 使用 uid 操作元素（click, fill, hover 等）
+3. 操作后可选择 `includeSnapshot: true` 获取新快照
+
+### 示例
+
+```
+1. take_snapshot() -> 获取 uid 列表
+2. click({ uid: "uid5" }) -> 点击按钮
+3. fill({ uid: "uid12", value: "hello" }) -> 填写输入框
+4. take_screenshot() -> 截图查看结果
 ```
 
-## 提供的 Tools (31 个)
+## 命令
 
-### Phase 1: 核心自动化 (17 个)
-
-| Tool | 功能 |
-|------|------|
-| `browser_navigate` | 导航到 URL |
-| `browser_screenshot` | 截图（支持元素/整页） |
-| `browser_get_text` | 获取页面文本 |
-| `browser_evaluate` | 执行 JS |
-| `browser_click` | 点击元素 |
-| `browser_type` | 输入文字 |
-| `browser_fill` | 表单填写 (input/select/checkbox/radio) |
-| `browser_hover` | 悬停元素 |
-| `browser_press_key` | 按键/组合键 |
-| `browser_handle_dialog` | 处理弹窗 |
-| `browser_wait` | 等待元素/超时 |
-| `browser_get_url` | 获取当前 URL |
-| `browser_list_tabs` | 列出所有标签页 |
-| `browser_switch_tab` | 切换标签页 |
-| `browser_new_page` | 新建标签页 |
-| `browser_close_page` | 关闭标签页 |
-| `browser_drag` | 拖拽元素 |
-
-### Phase 2: 调试能力 (4 个)
-
-| Tool | 功能 |
-|------|------|
-| `browser_list_console` | 列出控制台消息（支持按类型过滤） |
-| `browser_get_console` | 获取单条消息详情 |
-| `browser_list_network` | 列出网络请求（支持按资源类型过滤） |
-| `browser_get_network` | 获取请求详情（请求头、响应头、请求体、响应体） |
-
-### Phase 3: 高级功能 (4 个)
-
-| Tool | 功能 |
-|------|------|
-| `browser_performance_start` | 开始性能追踪 |
-| `browser_performance_stop` | 停止性能追踪 |
-| `browser_emulate` | 设备模拟（视口/UA/颜色方案/网络条件/地理位置） |
-| `browser_resize` | 调整窗口大小 |
-
-### Phase 4: 内存分析 (2 个)
-
-| Tool | 功能 |
-|------|------|
-| `browser_heap_snapshot` | 捕获堆快照 |
-| `browser_heap_compare` | 比较两个堆快照 |
-
-### Phase 5: 扩展功能 (4 个)
-
-| Tool | 功能 |
-|------|------|
-| `browser_install_extension` | 安装扩展说明 |
-| `browser_list_extensions` | 列出已安装扩展 |
-| `browser_enable_extension` | 启用扩展 |
-| `browser_disable_extension` | 禁用扩展 |
-
-## 提供的 Commands
-
-| Command | 功能 |
+| Command | 说明 |
 |---------|------|
-| `/chrome-port <port>` | 运行时切换调试端口 |
-| `/chrome-status` | 查看连接状态和配置来源 |
-
-## 设计文档
-
-详见 [docs/design/](./docs/design/) 目录。
+| `/chrome-port <port>` | 切换调试端口 |

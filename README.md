@@ -53,9 +53,9 @@ pi install git:github.com/Momojie-S/pi-harness-101
 
 ### chrome-devtools
 
-通过 CDP 控制已开启调试端口的 Chrome/Edge 浏览器。参考 [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) 实现。
+**完全兼容 [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)**，提供 52 个工具，实现从 MCP 无缝切换。
 
-**配置**（优先级：环境变量 > 项目配置 > 全局配置 > 默认值）：
+**配置**：
 
 ```json
 // .pi/chrome-devtools.json 或 ~/.pi/agent/chrome-devtools.json
@@ -64,14 +64,19 @@ pi install git:github.com/Momojie-S/pi-harness-101
 
 **前提**：启动浏览器时加 `--remote-debugging-port=19999`
 
-**提供 31 个工具**：
+**工具分类**：
 
-| 阶段 | 工具数 | 说明 |
-|------|--------|------|
-| Phase 1 | 17 | 核心自动化：导航、截图、点击、输入、表单、拖拽等 |
-| Phase 2 | 4 | 调试能力：控制台消息、网络请求 |
-| Phase 3 | 4 | 高级功能：性能追踪、设备模拟 |
-| Phase 4 | 2 | 内存分析：堆快照 |
-| Phase 5 | 4 | 扩展功能：Chrome 扩展管理 |
+| 类别 | 数量 | 说明 |
+|------|------|------|
+| Input automation | 10 | click, fill, hover, drag, press_key 等 |
+| Navigation | 6 | navigate_page, list_pages, new_page 等 |
+| Emulation | 2 | emulate, resize_page |
+| Performance | 3 | performance trace |
+| Network | 2 | list/get network requests |
+| Debugging | 8 | screenshot, snapshot, console, script |
+| Memory | 12 | heap snapshot 分析 |
+| Extensions | 5 | Chrome 扩展管理 |
+| Third-party | 2 | 第三方开发者工具 |
+| WebMCP | 2 | WebMCP 工具 |
 
 完整工具列表见 [extensions/chrome-devtools/README.md](./extensions/chrome-devtools/README.md)。

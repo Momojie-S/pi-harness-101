@@ -1,58 +1,14 @@
 /**
- * Chrome DevTools Extension for pi
- *
- * 通过 CDP (Chrome DevTools Protocol) 控制已开启调试端口的 Chrome/Edge 浏览器。
- * 用户需先启动浏览器: chrome.exe --remote-debugging-port=19999
- *
- * Phase 1 工具 (核心自动化 - 17 个):
- * - browser_navigate: 导航到 URL
- * - browser_screenshot: 页面截图
- * - browser_get_text: 获取页面/元素文本
- * - browser_evaluate: 执行 JavaScript
- * - browser_click: 点击元素
- * - browser_type: 输入文字
- * - browser_fill: 表单填写 (input/select/checkbox/radio)
- * - browser_hover: 悬停元素
- * - browser_press_key: 按键/组合键
- * - browser_handle_dialog: 处理弹窗
- * - browser_wait: 等待元素或超时
- * - browser_get_url: 获取当前 URL
- * - browser_list_tabs: 列出所有标签页
- * - browser_switch_tab: 切换标签页
- * - browser_new_page: 新建标签页
- * - browser_close_page: 关闭标签页
- * - browser_drag: 拖拽元素
- *
- * Phase 2 工具 (调试能力 - 4 个):
- * - browser_list_console: 列出控制台消息
- * - browser_get_console: 获取单条消息详情
- * - browser_list_network: 列出网络请求
- * - browser_get_network: 获取请求详情
- *
- * Phase 3 工具 (高级功能 - 4 个):
- * - browser_performance_start: 开始性能追踪
- * - browser_performance_stop: 停止性能追踪
- * - browser_emulate: 设备模拟 (视口/UA/颜色方案/网络/地理位置)
- * - browser_resize: 调整窗口大小
- *
- * Phase 4 工具 (内存分析 - 2 个):
- * - browser_heap_snapshot: 捕获堆快照
- * - browser_heap_compare: 比较两个堆快照
- *
- * Phase 5 工具 (扩展功能 - 4 个):
- * - browser_install_extension: 安装扩展说明
- * - browser_list_extensions: 列出已安装扩展
- * - browser_enable_extension: 启用扩展
- * - browser_disable_extension: 禁用扩展
- *
- * 总计: 31 个工具
+ * Chrome DevTools Extension for pi - 完全兼容 chrome-devtools-mcp
+ * 
+ * 工具名称和参数与 chrome-devtools-mcp 完全一致，实现无缝切换。
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import CDP from "chrome-remote-interface";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ============================================================
@@ -66,6 +22,7 @@ interface ConnectionState {
 	target: string;
 	consoleMessages: ConsoleMessage[];
 	networkRequests: Map<string, NetworkRequest>;
+	uidMap: Map<string, { selector: string; role: string; name: string }>;
 }
 
 interface ConsoleMessage {
@@ -91,12 +48,6 @@ interface NetworkRequest {
 	timestamp: number;
 }
 
-/** 配置文件结构 */
-interface ChromeDevtoolsConfig {
-	/** Chrome/Edge 调试端口 */
-	port?: number;
-}
-
 // ============================================================
 // 配置加载
 // ============================================================
@@ -104,15 +55,7 @@ interface ChromeDevtoolsConfig {
 const DEFAULT_PORT = 19999;
 const CONFIG_FILENAME = "chrome-devtools.json";
 
-/**
- * 加载配置，优先级（高→低）：
- * 1. 环境变量 CHROME_DEBUG_PORT
- * 2. 项目级配置 .pi/chrome-devtools.json
- * 3. 全局配置 ~/.pi/agent/chrome-devtools.json
- * 4. 默认值 19999
- */
 function loadConfig(cwd: string): { port: number; source: string } {
-	// 1. 环境变量
 	const envPort = process.env.CHROME_DEBUG_PORT;
 	if (envPort) {
 		const port = parseInt(envPort, 10);
@@ -121,35 +64,31 @@ function loadConfig(cwd: string): { port: number; source: string } {
 		}
 	}
 
-	// 2. 项目级配置 <cwd>/.pi/chrome-devtools.json
 	const projectConfigPath = join(cwd, CONFIG_DIR_NAME, CONFIG_FILENAME);
 	if (existsSync(projectConfigPath)) {
-		const config = readJsonConfig<ChromeDevtoolsConfig>(projectConfigPath);
+		const config = readJsonConfig<{ port?: number }>(projectConfigPath);
 		if (config?.port) {
 			return { port: config.port, source: `项目配置 ${projectConfigPath}` };
 		}
 	}
 
-	// 3. 全局配置 ~/.pi/agent/chrome-devtools.json
 	const homeDir = process.env.USERPROFILE || process.env.HOME || "";
 	if (homeDir) {
 		const globalConfigPath = join(homeDir, CONFIG_DIR_NAME, "agent", CONFIG_FILENAME);
 		if (existsSync(globalConfigPath)) {
-			const config = readJsonConfig<ChromeDevtoolsConfig>(globalConfigPath);
+			const config = readJsonConfig<{ port?: number }>(globalConfigPath);
 			if (config?.port) {
 				return { port: config.port, source: `全局配置 ${globalConfigPath}` };
 			}
 		}
 	}
 
-	// 4. 默认值
 	return { port: DEFAULT_PORT, source: "默认值" };
 }
 
 function readJsonConfig<T>(filePath: string): T | null {
 	try {
-		const content = readFileSync(filePath, "utf-8");
-		return JSON.parse(content) as T;
+		return JSON.parse(readFileSync(filePath, "utf-8")) as T;
 	} catch {
 		return null;
 	}
@@ -167,46 +106,46 @@ async function ensureConnected(port: number): Promise<CDPClient> {
 	}
 
 	const client = await CDP({ port });
-	connection = { 
-		client, 
+	connection = {
+		client,
 		target: `localhost:${port}`,
 		consoleMessages: [],
-		networkRequests: new Map()
+		networkRequests: new Map(),
+		uidMap: new Map(),
 	};
 
-	// 监听断开连接
 	client.on("disconnect", () => {
 		connection = null;
 	});
 
-	// 启用 Log domain 收集控制台消息
+	// 启用 Log domain
 	await client.Log.enable();
 	let consoleIdCounter = 1;
 	client.Log.entryAdded((event) => {
-		const entry = event.entry;
 		connection?.consoleMessages.push({
 			id: consoleIdCounter++,
-			level: entry.level,
-			text: entry.text,
-			timestamp: entry.timestamp,
-			url: entry.url,
-			lineNumber: entry.lineNumber,
+			level: event.entry.level,
+			text: event.entry.text,
+			timestamp: event.entry.timestamp,
+			url: event.entry.url,
+			lineNumber: event.entry.lineNumber,
 		});
-		// 保留最近 1000 条
 		if (connection && connection.consoleMessages.length > 1000) {
 			connection.consoleMessages.shift();
 		}
 	});
 
-	// 启用 Runtime domain 收集 console API 调用
+	// 启用 Runtime domain
 	await client.Runtime.enable();
 	client.Runtime.consoleAPICalled((event) => {
-		const text = event.args.map(arg => {
-			if (arg.value !== undefined) return String(arg.value);
-			if (arg.description) return arg.description;
-			return JSON.stringify(arg);
-		}).join(' ');
-		
+		const text = event.args
+			.map((arg) => {
+				if (arg.value !== undefined) return String(arg.value);
+				if (arg.description) return arg.description;
+				return JSON.stringify(arg);
+			})
+			.join(" ");
+
 		connection?.consoleMessages.push({
 			id: consoleIdCounter++,
 			level: event.type,
@@ -218,7 +157,7 @@ async function ensureConnected(port: number): Promise<CDPClient> {
 		}
 	});
 
-	// 启用 Network domain 收集网络请求
+	// 启用 Network domain
 	await client.Network.enable();
 	client.Network.requestWillBeSent((event) => {
 		connection?.networkRequests.set(event.requestId, {
@@ -241,15 +180,6 @@ async function ensureConnected(port: number): Promise<CDPClient> {
 		}
 	});
 
-	// 清理已完成的请求（保留最近 500 个）
-	client.Network.loadingFinished(() => {
-		if (connection && connection.networkRequests.size > 500) {
-			const keys = Array.from(connection.networkRequests.keys());
-			const toRemove = keys.slice(0, keys.length - 500);
-			toRemove.forEach(key => connection!.networkRequests.delete(key));
-		}
-	});
-
 	return client;
 }
 
@@ -257,207 +187,100 @@ async function disconnect(): Promise<void> {
 	if (connection) {
 		try {
 			await connection.client.close();
-		} catch {
-			// 忽略关闭错误
-		}
+		} catch {}
 		connection = null;
 	}
 }
 
 // ============================================================
-// 工具参数 Schema
+// UID 系统 - 基于 a11y tree
 // ============================================================
 
-const NAVIGATE_PARAMS = Type.Object({
-	url: Type.String({ description: "要导航到的 URL" }),
-});
+let uidCounter = 1;
 
-const SCREENSHOT_PARAMS = Type.Object({
-	selector: Type.Optional(
-		Type.String({ description: "CSS 选择器，只截取该元素区域" }),
-	),
-	fullPage: Type.Optional(
-		Type.Boolean({ description: "是否截取完整页面（包括滚动区域）" }),
-	),
-});
+async function takeSnapshot(client: CDPClient): Promise<string> {
+	await client.Accessibility.enable();
+	const result = await client.Accessibility.getFullAXTree();
 
-const GET_TEXT_PARAMS = Type.Object({
-	selector: Type.Optional(
-		Type.String({ description: "CSS 选择器，只获取该元素的文本" }),
-	),
-});
+	connection!.uidMap.clear();
+	uidCounter = 1;
 
-const EVALUATE_PARAMS = Type.Object({
-	expression: Type.String({ description: "要执行的 JavaScript 表达式" }),
-});
+	const lines: string[] = [];
 
-const CLICK_PARAMS = Type.Object({
-	selector: Type.String({ description: "要点击的元素的 CSS 选择器" }),
-});
+	function processNode(node: any, depth: number): void {
+		if (node.ignored) return;
 
-const TYPE_PARAMS = Type.Object({
-	selector: Type.String({ description: "输入框的 CSS 选择器" }),
-	text: Type.String({ description: "要输入的文字" }),
-	clear: Type.Optional(
-		Type.Boolean({ description: "输入前是否清空已有内容，默认 true" }),
-	),
-});
+		const role = node.role?.value || "unknown";
+		const name = node.name?.value || "";
+		const value = node.value?.value;
 
-const WAIT_PARAMS = Type.Object({
-	selector: Type.Optional(
-		Type.String({ description: "等待该 CSS 选择器的元素出现" }),
-	),
-	timeout: Type.Optional(
-		Type.Number({ description: "超时时间（毫秒），默认 5000" }),
-	),
-});
+		// 为可交互元素分配 uid
+		const interactiveRoles = [
+			"button", "link", "textbox", "checkbox", "radio",
+			"combobox", "menuitem", "tab", "slider", "switch",
+			"searchbox", "spinbutton", "option", "img"
+		];
 
-const SWITCH_TAB_PARAMS = Type.Object({
-	targetId: Type.String({ description: "要切换到的标签页的 targetId" }),
-});
+		let uid = "";
+		if (interactiveRoles.includes(role) || name) {
+			uid = `uid${uidCounter++}`;
+			const backendNodeId = node.backendDOMNodeId;
+			let selector = "";
+			if (backendNodeId && backendNodeId !== -1) {
+				// 使用 backendNodeId 生成选择器
+				selector = `[data-uid="${uid}"]`;
+				connection!.uidMap.set(uid, { selector: `#${backendNodeId}`, role, name });
+			}
+		}
 
-// Phase 1 新增工具参数
+		const indent = "  ".repeat(depth);
+		const valueStr = value ? ` value="${value}"` : "";
+		const uidStr = uid ? ` [${uid}]` : "";
+		lines.push(`${indent}${role}${name ? ` "${name}"` : ""}${valueStr}${uidStr}`);
 
-const FILL_PARAMS = Type.Object({
-	selector: Type.String({ description: "表单元素的 CSS 选择器" }),
-	value: Type.String({ description: "要填入的值" }),
-});
+		if (node.childIds) {
+			for (const childId of node.childIds) {
+				const childNode = result.nodes.find((n: any) => n.nodeId === childId);
+				if (childNode) {
+					processNode(childNode, depth + 1);
+				}
+			}
+		}
+	}
 
-const HOVER_PARAMS = Type.Object({
-	selector: Type.String({ description: "要悬停的元素的 CSS 选择器" }),
-});
+	// 从根节点开始
+	const rootNode = result.nodes.find((n: any) => n.role?.value === "RootWebArea");
+	if (rootNode) {
+		processNode(rootNode, 0);
+	}
 
-const PRESS_KEY_PARAMS = Type.Object({
-	key: Type.String({
-		description:
-			'按键或组合键，如 "Enter", "Tab", "Escape", "Control+A", "Control+Shift+R"',
-	}),
-});
+	return lines.join("\n");
+}
 
-const HANDLE_DIALOG_PARAMS = Type.Object({
-	action: Type.Union([Type.Literal("accept"), Type.Literal("dismiss")], {
-		description: "接受或取消弹窗",
-	}),
-	promptText: Type.Optional(
-		Type.String({ description: "对于 prompt 弹窗，输入的文字" }),
-	),
-});
+async function getSelectorByUid(uid: string): Promise<string | null> {
+	if (!connection) return null;
+	const info = connection.uidMap.get(uid);
+	if (!info) return null;
 
-const NEW_PAGE_PARAMS = Type.Object({
-	url: Type.Optional(Type.String({ description: "新标签页的 URL，默认 about:blank" })),
-	background: Type.Optional(
-		Type.Boolean({ description: "是否在后台打开（不切换到该标签页）" }),
-	),
-});
+	// 使用 backendNodeId 获取元素
+	const client = connection.client;
+	try {
+		const nodeId = parseInt(info.selector.replace("#", ""), 10);
+		const result = await client.DOM.describeNode({ nodeId });
+		if (result.node.nodeName) {
+			// 构建简单的选择器
+			const id = result.node.attributes?.find((_, i, arr) => arr[i] === "id");
+			if (id && result.node.attributes) {
+				const idValue = result.node.attributes[result.node.attributes.indexOf("id") + 1];
+				if (idValue) return `#${idValue}`;
+			}
+			// 使用 nth-child
+			return `::-p-xpath(//${result.node.nodeName.toLowerCase()}[${nodeId}])`;
+		}
+	} catch {}
 
-const CLOSE_PAGE_PARAMS = Type.Object({
-	targetId: Type.String({ description: "要关闭的标签页的 targetId" }),
-});
-
-const DRAG_PARAMS = Type.Object({
-	fromSelector: Type.String({ description: "拖拽起始元素的 CSS 选择器" }),
-	toSelector: Type.String({ description: "拖拽目标元素的 CSS 选择器" }),
-});
-
-// Phase 2 工具参数 (调试能力)
-
-const LIST_CONSOLE_PARAMS = Type.Object({
-	types: Type.Optional(
-		Type.Array(Type.String(), {
-			description: "过滤消息类型: log, info, warning, error, debug",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({ description: "返回的最大消息数，默认 100" }),
-	),
-});
-
-const GET_CONSOLE_PARAMS = Type.Object({
-	id: Type.Number({ description: "控制台消息的 ID" }),
-});
-
-const LIST_NETWORK_PARAMS = Type.Object({
-	resourceTypes: Type.Optional(
-		Type.Array(Type.String(), {
-			description: "过滤资源类型: Document, Script, Stylesheet, Image, XHR, Fetch, WebSocket, Other",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({ description: "返回的最大请求数，默认 100" }),
-	),
-});
-
-const GET_NETWORK_PARAMS = Type.Object({
-	id: Type.String({ description: "网络请求的 ID" }),
-});
-
-// Phase 3 工具参数 (高级功能)
-
-const PERFORMANCE_START_PARAMS = Type.Object({
-	reload: Type.Optional(
-		Type.Boolean({ description: "开始录制后是否自动刷新页面" }),
-	),
-	autoStop: Type.Optional(
-		Type.Boolean({ description: "是否自动停止（页面加载完成后）" }),
-	),
-});
-
-const PERFORMANCE_STOP_PARAMS = Type.Object({});
-
-const EMULATE_PARAMS = Type.Object({
-	viewport: Type.Optional(
-		Type.String({ description: "视口尺寸，如 '1280x720' 或 '375x667x2,mobile,touch'" }),
-	),
-	userAgent: Type.Optional(
-		Type.String({ description: "User Agent 字符串" }),
-	),
-	colorScheme: Type.Optional(
-		Type.Union([Type.Literal("dark"), Type.Literal("light"), Type.Literal("auto")], {
-			description: "颜色方案",
-		}),
-	),
-	networkConditions: Type.Optional(
-		Type.Union(
-			[
-				Type.Literal("Offline"),
-				Type.Literal("Slow 3G"),
-				Type.Literal("Fast 3G"),
-				Type.Literal("Slow 4G"),
-				Type.Literal("Fast 4G"),
-			],
-			{ description: "网络条件模拟" },
-		),
-	),
-	geolocation: Type.Optional(
-		Type.String({ description: "地理位置，如 '39.9042,116.4074' (纬度,经度)" }),
-	),
-});
-
-const RESIZE_PARAMS = Type.Object({
-	width: Type.Number({ description: "页面宽度" }),
-	height: Type.Number({ description: "页面高度" }),
-});
-
-// Phase 4 工具参数 (内存分析)
-
-const HEAP_SNAPSHOT_PARAMS = Type.Object({
-	filePath: Type.String({ description: "保存堆快照的文件路径" }),
-});
-
-const HEAP_COMPARE_PARAMS = Type.Object({
-	baseFilePath: Type.String({ description: "基准快照文件路径（较早的）" }),
-	currentFilePath: Type.String({ description: "当前快照文件路径（较新的）" }),
-});
-
-// Phase 5 工具参数 (扩展功能)
-
-const INSTALL_EXTENSION_PARAMS = Type.Object({
-	path: Type.String({ description: "扩展目录路径（解压后的扩展）" }),
-});
-
-const EXTENSION_ACTION_PARAMS = Type.Object({
-	id: Type.String({ description: "扩展 ID" }),
-});
+	return null;
+}
 
 // ============================================================
 // Extension 入口
@@ -467,40 +290,35 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 	let configuredPort = DEFAULT_PORT;
 	let configSource = "默认值";
 
-	// ---------- browser_navigate ----------
+	// ============================================================
+	// Input automation tools
+	// ============================================================
+
+	// ---------- take_snapshot ----------
 	pi.registerTool({
-		name: "browser_navigate",
-		label: "Navigate",
-		description: "在浏览器中导航到指定 URL",
-		parameters: NAVIGATE_PARAMS,
+		name: "take_snapshot",
+		label: "Take Snapshot",
+		description: "获取页面的 a11y tree 快照，包含每个元素的 uid，用于后续操作。",
+		parameters: Type.Object({
+			filePath: Type.Optional(Type.String({ description: "保存快照的文件路径" })),
+			verbose: Type.Optional(Type.Boolean({ description: "是否包含完整信息" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
+				const snapshot = await takeSnapshot(client);
 
-				// 启用 Page domain
-				await client.Page.enable();
-
-				// 导航
-				const result = await client.Page.navigate({ url: params.url });
-
-				if (result.errorText) {
+				if (params.filePath) {
+					writeFileSync(params.filePath, snapshot);
 					return {
-						content: [{ type: "text", text: `导航失败: ${result.errorText}` }],
-						details: { success: false },
+						content: [{ type: "text", text: `快照已保存到: ${params.filePath}` }],
+						details: { success: true },
 					};
 				}
 
-				// 等待页面加载完成
-				await client.Page.loadEventFired();
-
 				return {
-					content: [
-						{
-							type: "text",
-							text: `已导航到: ${params.url}\nFrameId: ${result.frameId}`,
-						},
-					],
-					details: { success: true, url: params.url, frameId: result.frameId },
+					content: [{ type: "text", text: snapshot }],
+					details: { success: true, uidCount: connection?.uidMap.size || 0 },
 				};
 			} catch (err) {
 				return {
@@ -512,459 +330,58 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_screenshot ----------
+	// ---------- click ----------
 	pi.registerTool({
-		name: "browser_screenshot",
-		label: "Screenshot",
-		description: "截取浏览器页面截图。可指定 CSS 选择器只截取某元素，或截取完整页面。",
-		parameters: SCREENSHOT_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-				await client.Page.enable();
-
-				let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
-
-				if (params.selector) {
-					// 获取元素的位置和大小
-					const result = await client.Runtime.evaluate({
-						expression: `
-							(() => {
-								const el = document.querySelector('${cssEscape(params.selector)}');
-								if (!el) return null;
-								const rect = el.getBoundingClientRect();
-								return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-							})()
-						`,
-						returnByValue: true,
-					});
-
-					const box = result.result.value;
-					if (!box) {
-						return {
-							content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
-							details: { success: false },
-							isError: true,
-						};
-					}
-					clip = { ...box, scale: 1 };
-				}
-
-				const screenshot = await client.Page.captureScreenshot({
-					format: "png",
-					clip,
-					captureBeyondViewport: params.fullPage ?? false,
-				});
-
-				return {
-					content: [
-						{
-							type: "image",
-							source: {
-								type: "base64",
-								mediaType: "image/png",
-								data: screenshot.data,
-							},
-						},
-						{
-							type: "text",
-							text: params.selector
-								? `已截取元素: ${params.selector}`
-								: params.fullPage
-									? "已截取完整页面"
-									: "已截取当前视口",
-						},
-					],
-					details: {
-						success: true,
-						selector: params.selector,
-						fullPage: params.fullPage,
-					},
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_get_text ----------
-	pi.registerTool({
-		name: "browser_get_text",
-		label: "Get Text",
-		description: "获取页面或指定元素的文本内容。不传 selector 则获取整个页面的可见文本。",
-		parameters: GET_TEXT_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				let expression: string;
-				if (params.selector) {
-					expression = `
-						(() => {
-							const el = document.querySelector('${cssEscape(params.selector)}');
-							if (!el) return null;
-							return el.innerText || el.textContent || '';
-						})()
-					`;
-				} else {
-					expression = `document.body.innerText || document.body.textContent || ''`;
-				}
-
-				const result = await client.Runtime.evaluate({
-					expression,
-					returnByValue: true,
-				});
-
-				if (result.exceptionDetails) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `JS 执行错误: ${result.exceptionDetails.text}`,
-							},
-						],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				const text = result.result.value;
-				if (text === null && params.selector) {
-					return {
-						content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				// 截断过长文本
-				const maxLength = 50000;
-				const truncated =
-					typeof text === "string" && text.length > maxLength
-						? text.slice(0, maxLength) + `\n\n... (已截断，共 ${text.length} 字符)`
-						: text;
-
-				return {
-					content: [{ type: "text", text: truncated ?? "" }],
-					details: {
-						success: true,
-						selector: params.selector,
-						length: typeof text === "string" ? text.length : 0,
-					},
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_evaluate ----------
-	pi.registerTool({
-		name: "browser_evaluate",
-		label: "Evaluate JS",
-		description:
-			"在浏览器页面中执行 JavaScript 表达式并返回结果。可用于获取 DOM 信息、操作页面、调试等。",
-		parameters: EVALUATE_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Runtime.evaluate({
-					expression: params.expression,
-					returnByValue: true,
-					awaitPromise: true,
-				});
-
-				if (result.exceptionDetails) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `JS 执行错误: ${result.exceptionDetails.text}\n${result.exceptionDetails.stackTrace?.callFrames?.map((f) => `  at ${f.functionName || "(anonymous)"} (${f.url}:${f.lineNumber})`).join("\n") ?? ""}`,
-							},
-						],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				const value = result.result.value;
-				const text =
-					value === undefined
-						? "undefined"
-						: typeof value === "object"
-							? JSON.stringify(value, null, 2)
-							: String(value);
-
-				return {
-					content: [{ type: "text", text }],
-					details: {
-						success: true,
-						type: result.result.type,
-						subtype: result.result.subtype,
-					},
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_click ----------
-	pi.registerTool({
-		name: "browser_click",
+		name: "click",
 		label: "Click",
-		description: "点击页面上的元素。通过 CSS 选择器定位元素，模拟点击操作。",
-		parameters: CLICK_PARAMS,
+		description: "点击指定 uid 的元素",
+		parameters: Type.Object({
+			uid: Type.String({ description: "元素的 uid（从 take_snapshot 获取）" }),
+			dblClick: Type.Optional(Type.Boolean({ description: "是否双击" })),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Runtime.evaluate({
-					expression: `
-						(() => {
-							const el = document.querySelector('${cssEscape(params.selector)}');
-							if (!el) return { found: false };
-							el.click();
-							return { found: true, tag: el.tagName, text: (el.innerText || '').slice(0, 100) };
-						})()
-					`,
-					returnByValue: true,
-				});
-
-				const info = result.result.value;
-				if (!info?.found) {
+				const info = connection?.uidMap.get(params.uid);
+				if (!info) {
 					return {
-						content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
+						content: [{ type: "text", text: `未找到 uid: ${params.uid}` }],
 						details: { success: false },
 						isError: true,
 					};
 				}
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: `已点击 <${info.tag}> 元素${info.text ? `，文本: "${info.text}"` : ""}`,
-						},
-					],
-					details: { success: true, selector: params.selector },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_type ----------
-	pi.registerTool({
-		name: "browser_type",
-		label: "Type",
-		description: "在输入框中输入文字。通过 CSS 选择器定位输入元素，模拟输入操作。",
-		parameters: TYPE_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-				const clear = params.clear ?? true;
-
-				const result = await client.Runtime.evaluate({
-					expression: `
-						(() => {
-							const el = document.querySelector('${cssEscape(params.selector)}');
-							if (!el) return { found: false };
-							${clear ? "el.value = '';" : ""}
-							// 触发 input 事件让框架感知到变化
-							const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-								window.HTMLInputElement.prototype, 'value'
-							)?.set || Object.getOwnPropertyDescriptor(
-								window.HTMLTextAreaElement.prototype, 'value'
-							)?.set;
-							if (nativeInputValueSetter) {
-								nativeInputValueSetter.call(el, '${jsEscape(params.text)}');
-							} else {
-								el.value = '${jsEscape(params.text)}';
-							}
-							el.dispatchEvent(new Event('input', { bubbles: true }));
-							el.dispatchEvent(new Event('change', { bubbles: true }));
-							return { found: true, tag: el.tagName };
-						})()
-					`,
-					returnByValue: true,
-				});
-
-				const info = result.result.value;
-				if (!info?.found) {
-					return {
-						content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `已在 <${info.tag}> 中输入: "${params.text}"`,
-						},
-					],
-					details: { success: true, selector: params.selector },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_wait ----------
-	pi.registerTool({
-		name: "browser_wait",
-		label: "Wait",
-		description: "等待页面元素出现或等待指定时间。至少提供 selector 或 timeout 之一。",
-		parameters: WAIT_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-				const timeout = params.timeout ?? 5000;
-
-				if (params.selector) {
-					// 轮询等待元素出现
-					const startTime = Date.now();
-					const interval = 200;
-
-					while (Date.now() - startTime < timeout) {
-						const result = await client.Runtime.evaluate({
-							expression: `!!document.querySelector('${cssEscape(params.selector)}')`,
-							returnByValue: true,
-						});
-
-						if (result.result.value === true) {
-							const elapsed = Date.now() - startTime;
-							return {
-								content: [
-									{
-										type: "text",
-										text: `元素已出现: ${params.selector}（等待 ${elapsed}ms）`,
-									},
-								],
-								details: { success: true, elapsed },
-							};
-						}
-
-						await sleep(interval);
+				// 使用 backendNodeId 点击
+				const nodeId = parseInt(info.selector.replace("#", ""), 10);
+				await client.DOM.focus({ nodeId });
+				
+				// 模拟点击
+				const box = await client.DOM.getBoxModel({ nodeId });
+				if (box.model) {
+					const x = (box.model.content[0] + box.model.content[2]) / 2;
+					const y = (box.model.content[1] + box.model.content[5]) / 2;
+					
+					await client.Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
+					await client.Input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
+					await client.Input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+					
+					if (params.dblClick) {
+						await client.Input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 2 });
+						await client.Input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 2 });
 					}
-
-					return {
-						content: [
-							{
-								type: "text",
-								text: `等待超时（${timeout}ms），元素未出现: ${params.selector}`,
-							},
-						],
-						details: { success: false, timeout },
-						isError: true,
-					};
-				} else {
-					// 纯等待
-					await sleep(timeout);
-					return {
-						content: [{ type: "text", text: `已等待 ${timeout}ms` }],
-						details: { success: true, timeout },
-					};
-				}
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_get_url ----------
-	pi.registerTool({
-		name: "browser_get_url",
-		label: "Get URL",
-		description: "获取当前页面的 URL 和标题。",
-		parameters: Type.Object({}),
-		async execute() {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Runtime.evaluate({
-					expression: "JSON.stringify({ url: location.href, title: document.title })",
-					returnByValue: true,
-				});
-
-				const info = JSON.parse(result.result.value);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `URL: ${info.url}\nTitle: ${info.title}`,
-						},
-					],
-					details: { success: true, url: info.url, title: info.title },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_list_tabs ----------
-	pi.registerTool({
-		name: "browser_list_tabs",
-		label: "List Tabs",
-		description: "列出浏览器中所有标签页的信息。",
-		parameters: Type.Object({}),
-		async execute() {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Target.getTargets();
-				const pageTargets = result.targetInfos.filter((t) => t.type === "page");
-
-				if (pageTargets.length === 0) {
-					return {
-						content: [{ type: "text", text: "没有找到打开的标签页" }],
-						details: { success: true, count: 0 },
-					};
 				}
 
-				const lines = pageTargets.map((t, i) => {
-					const active = t.targetId === connection?.target ? " (当前)" : "";
-					return `${i + 1}. [${t.targetId}]${active}\n   URL: ${t.url}\n   Title: ${t.title}`;
-				});
+				let result = `已点击元素 [${params.uid}] ${info.role} "${info.name}"`;
+				
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
 
 				return {
-					content: [{ type: "text", text: lines.join("\n\n") }],
-					details: { success: true, count: pageTargets.length },
+					content: [{ type: "text", text: result }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -976,177 +393,62 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_switch_tab ----------
+	// ---------- fill ----------
 	pi.registerTool({
-		name: "browser_switch_tab",
-		label: "Switch Tab",
-		description: "切换到指定的浏览器标签页。使用 browser_list_tabs 获取 targetId。",
-		parameters: SWITCH_TAB_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				// 激活目标
-				await client.Target.activateTarget({ targetId: params.targetId });
-
-				// 连接到新标签页
-				await disconnect();
-				const newClient = await CDP({ port: configuredPort, target: params.targetId });
-				connection = { client: newClient, target: params.targetId };
-				newClient.on("disconnect", () => {
-					connection = null;
-				});
-
-				return {
-					content: [{ type: "text", text: `已切换到标签页: ${params.targetId}` }],
-					details: { success: true, targetId: params.targetId },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ============================================================
-	// Phase 1 新增工具
-	// ============================================================
-
-	// ---------- browser_fill ----------
-	pi.registerTool({
-		name: "browser_fill",
+		name: "fill",
 		label: "Fill",
-		description:
-			"在表单元素中填入值。支持 input、textarea、select、checkbox、radio 等元素。",
-		parameters: FILL_PARAMS,
+		description: "在输入框或选择框中填入值",
+		parameters: Type.Object({
+			uid: Type.String({ description: "元素的 uid" }),
+			value: Type.String({ description: "要填入的值" }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
+				const info = connection?.uidMap.get(params.uid);
+				if (!info) {
+					return {
+						content: [{ type: "text", text: `未找到 uid: ${params.uid}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
 
-				const result = await client.Runtime.evaluate({
+				const nodeId = parseInt(info.selector.replace("#", ""), 10);
+				await client.DOM.focus({ nodeId });
+
+				// 使用 Runtime.evaluate 设置值
+				await client.Runtime.evaluate({
 					expression: `
 						(() => {
-							const el = document.querySelector('${cssEscape(params.selector)}');
-							if (!el) return { found: false };
-							const tag = el.tagName.toLowerCase();
-							const type = (el.type || '').toLowerCase();
-							
-							// checkbox / radio
-							if (type === 'checkbox' || type === 'radio') {
-								const shouldCheck = params.value === 'true' || params.value === '1' || params.value === 'on';
-								if (el.checked !== shouldCheck) {
-									el.click();
-								}
-								return { found: true, tag, checked: el.checked };
-							}
-							
-							// select
-							if (tag === 'select') {
-								const options = Array.from(el.options);
-								const option = options.find(o => o.value === params.value || o.text === params.value);
-								if (option) {
-									el.value = option.value;
-								} else {
-									return { found: true, tag, error: 'Option not found: ' + params.value };
-								}
-								el.dispatchEvent(new Event('change', { bubbles: true }));
-								return { found: true, tag, value: el.value };
-							}
-							
-							// input / textarea
+							const el = document.activeElement;
+							if (!el) return 'no active element';
 							const nativeSetter = Object.getOwnPropertyDescriptor(
 								window.HTMLInputElement.prototype, 'value'
 							)?.set || Object.getOwnPropertyDescriptor(
 								window.HTMLTextAreaElement.prototype, 'value'
 							)?.set;
-							if (nativeSetter) {
-								nativeSetter.call(el, params.value);
-							} else {
-								el.value = params.value;
-							}
+							if (nativeSetter) nativeSetter.call(el, ${JSON.stringify(params.value)});
+							else el.value = ${JSON.stringify(params.value)};
 							el.dispatchEvent(new Event('input', { bubbles: true }));
 							el.dispatchEvent(new Event('change', { bubbles: true }));
-							return { found: true, tag, value: el.value };
+							return 'ok';
 						})()
 					`,
 					returnByValue: true,
-					// 注入参数
-					uniqueContextId: undefined,
 				});
 
-				// 重新执行，带参数
-				const result2 = await client.Runtime.evaluate({
-					expression: `
-						((params) => {
-							const el = document.querySelector(params.selector);
-							if (!el) return { found: false };
-							const tag = el.tagName.toLowerCase();
-							const type = (el.type || '').toLowerCase();
-							
-							if (type === 'checkbox' || type === 'radio') {
-								const shouldCheck = params.value === 'true' || params.value === '1' || params.value === 'on';
-								if (el.checked !== shouldCheck) el.click();
-								return { found: true, tag, checked: el.checked };
-							}
-							
-							if (tag === 'select') {
-								const options = Array.from(el.options);
-								const option = options.find(o => o.value === params.value || o.text === params.value);
-								if (option) {
-									el.value = option.value;
-								} else {
-									return { found: true, tag, error: 'Option not found: ' + params.value };
-								}
-								el.dispatchEvent(new Event('change', { bubbles: true }));
-								return { found: true, tag, value: el.value };
-							}
-							
-							const nativeSetter = Object.getOwnPropertyDescriptor(
-								window.HTMLInputElement.prototype, 'value'
-							)?.set || Object.getOwnPropertyDescriptor(
-								window.HTMLTextAreaElement.prototype, 'value'
-							)?.set;
-							if (nativeSetter) {
-								nativeSetter.call(el, params.value);
-							} else {
-								el.value = params.value;
-							}
-							el.dispatchEvent(new Event('input', { bubbles: true }));
-							el.dispatchEvent(new Event('change', { bubbles: true }));
-							return { found: true, tag, value: el.value };
-						})(${JSON.stringify({ selector: params.selector, value: params.value })})
-					`,
-					returnByValue: true,
-				});
+				let result = `已在 [${params.uid}] ${info.role} "${info.name}" 中填入: "${params.value}"`;
 
-				const info = result2.result.value;
-				if (!info?.found) {
-					return {
-						content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				if (info.error) {
-					return {
-						content: [{ type: "text", text: info.error }],
-						details: { success: false },
-						isError: true,
-					};
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
 				}
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `已在 <${info.tag}> 中填入: "${params.value}"`,
-						},
-					],
-					details: { success: true, selector: params.selector },
+					content: [{ type: "text", text: result }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -1158,53 +460,45 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_hover ----------
+	// ---------- hover ----------
 	pi.registerTool({
-		name: "browser_hover",
+		name: "hover",
 		label: "Hover",
-		description: "将鼠标悬停在指定元素上。可触发 hover 效果和下拉菜单等。",
-		parameters: HOVER_PARAMS,
+		description: "悬停在指定元素上",
+		parameters: Type.Object({
+			uid: Type.String({ description: "元素的 uid" }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				// 获取元素位置
-				const result = await client.Runtime.evaluate({
-					expression: `
-						(() => {
-							const el = document.querySelector('${cssEscape(params.selector)}');
-							if (!el) return null;
-							const rect = el.getBoundingClientRect();
-							return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName };
-						})()
-					`,
-					returnByValue: true,
-				});
-
-				const box = result.result.value;
-				if (!box) {
+				const info = connection?.uidMap.get(params.uid);
+				if (!info) {
 					return {
-						content: [{ type: "text", text: `未找到元素: ${params.selector}` }],
+						content: [{ type: "text", text: `未找到 uid: ${params.uid}` }],
 						details: { success: false },
 						isError: true,
 					};
 				}
 
-				// 使用 Input domain 发送鼠标移动事件
-				await client.Input.dispatchMouseEvent({
-					type: "mouseMoved",
-					x: box.x,
-					y: box.y,
-				});
+				const nodeId = parseInt(info.selector.replace("#", ""), 10);
+				const box = await client.DOM.getBoxModel({ nodeId });
+				if (box.model) {
+					const x = (box.model.content[0] + box.model.content[2]) / 2;
+					const y = (box.model.content[1] + box.model.content[5]) / 2;
+					await client.Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
+				}
+
+				let result = `已悬停在 [${params.uid}] ${info.role} "${info.name}"`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `已悬停在 <${box.tag}> 元素上 (${Math.round(box.x)}, ${Math.round(box.y)})`,
-						},
-					],
-					details: { success: true, selector: params.selector },
+					content: [{ type: "text", text: result }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -1216,18 +510,19 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_press_key ----------
+	// ---------- press_key ----------
 	pi.registerTool({
-		name: "browser_press_key",
+		name: "press_key",
 		label: "Press Key",
-		description:
-			'按下按键或组合键。如 "Enter", "Tab", "Escape", "Control+A", "Control+Shift+R" 等。',
-		parameters: PRESS_KEY_PARAMS,
+		description: "按下按键或组合键",
+		parameters: Type.Object({
+			key: Type.String({ description: '按键，如 "Enter", "Control+A"' }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
 
-				// 解析按键
 				const parts = params.key.split("+");
 				const key = parts[parts.length - 1];
 				const modifiers = parts.slice(0, -1);
@@ -1238,24 +533,22 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 					if (m === "control" || m === "ctrl") modifiersBit |= 2;
 					else if (m === "alt") modifiersBit |= 1;
 					else if (m === "shift") modifiersBit |= 8;
-					else if (m === "meta" || m === "cmd" || m === "command") modifiersBit |= 4;
+					else if (m === "meta" || m === "cmd") modifiersBit |= 4;
 				}
 
-				// 发送 keyDown + keyUp
-				await client.Input.dispatchKeyEvent({
-					type: "keyDown",
-					key,
-					modifiers: modifiersBit,
-				});
-				await client.Input.dispatchKeyEvent({
-					type: "keyUp",
-					key,
-					modifiers: modifiersBit,
-				});
+				await client.Input.dispatchKeyEvent({ type: "keyDown", key, modifiers: modifiersBit });
+				await client.Input.dispatchKeyEvent({ type: "keyUp", key, modifiers: modifiersBit });
+
+				let result = `已按下: ${params.key}`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
 
 				return {
-					content: [{ type: "text", text: `已按下: ${params.key}` }],
-					details: { success: true, key: params.key },
+					content: [{ type: "text", text: result }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -1267,39 +560,65 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_handle_dialog ----------
+	// ---------- type_text ----------
 	pi.registerTool({
-		name: "browser_handle_dialog",
+		name: "type_text",
+		label: "Type Text",
+		description: "在当前焦点元素中输入文字",
+		parameters: Type.Object({
+			text: Type.String({ description: "要输入的文字" }),
+			submitKey: Type.Optional(Type.String({ description: "输入后按的键，如 Enter" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				// 逐字符输入
+				for (const char of params.text) {
+					await client.Input.dispatchKeyEvent({ type: "keyDown", text: char });
+					await client.Input.dispatchKeyEvent({ type: "keyUp", text: char });
+				}
+
+				if (params.submitKey) {
+					await client.Input.dispatchKeyEvent({ type: "keyDown", key: params.submitKey });
+					await client.Input.dispatchKeyEvent({ type: "keyUp", key: params.submitKey });
+				}
+
+				return {
+					content: [{ type: "text", text: `已输入: "${params.text}"${params.submitKey ? ` 并按下 ${params.submitKey}` : ""}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- handle_dialog ----------
+	pi.registerTool({
+		name: "handle_dialog",
 		label: "Handle Dialog",
-		description:
-			"处理浏览器弹窗（alert/confirm/prompt）。使用 browser_wait 等待弹窗出现后再调用。",
-		parameters: HANDLE_DIALOG_PARAMS,
+		description: "处理浏览器弹窗",
+		parameters: Type.Object({
+			action: Type.Union([Type.Literal("accept"), Type.Literal("dismiss")]),
+			promptText: Type.Optional(Type.String({ description: "prompt 弹窗的输入" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				// 启用 Page domain 以接收弹窗事件
 				await client.Page.enable();
-
-				if (params.action === "accept") {
-					await client.Page.handleJavaScriptDialog({
-						accept: true,
-						promptText: params.promptText,
-					});
-				} else {
-					await client.Page.handleJavaScriptDialog({
-						accept: false,
-					});
-				}
+				await client.Page.handleJavaScriptDialog({
+					accept: params.action === "accept",
+					promptText: params.promptText,
+				});
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `已${params.action === "accept" ? "接受" : "取消"}弹窗${params.promptText ? `，输入: "${params.promptText}"` : ""}`,
-						},
-					],
-					details: { success: true, action: params.action },
+					content: [{ type: "text", text: `已${params.action === "accept" ? "接受" : "取消"}弹窗` }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -1311,96 +630,41 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_new_page ----------
+	// ---------- upload_file ----------
 	pi.registerTool({
-		name: "browser_new_page",
-		label: "New Page",
-		description: "打开新的浏览器标签页。",
-		parameters: NEW_PAGE_PARAMS,
+		name: "upload_file",
+		label: "Upload File",
+		description: "上传文件到 file input 元素",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "文件路径" }),
+			uid: Type.String({ description: "file input 元素的 uid" }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-				const url = params.url || "about:blank";
-
-				const result = await client.Target.createTarget({ url });
-
-				if (!params.background) {
-					// 切换到新标签页
-					await client.Target.activateTarget({ targetId: result.targetId });
-					await disconnect();
-					const newClient = await CDP({
-						port: configuredPort,
-						target: result.targetId,
-					});
-					connection = { client: newClient, target: result.targetId };
-					newClient.on("disconnect", () => {
-						connection = null;
-					});
-				}
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `已打开新标签页: ${url}\ntargetId: ${result.targetId}`,
-						},
-					],
-					details: { success: true, targetId: result.targetId, url },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_close_page ----------
-	pi.registerTool({
-		name: "browser_close_page",
-		label: "Close Page",
-		description: "关闭指定的浏览器标签页。使用 browser_list_tabs 获取 targetId。",
-		parameters: CLOSE_PAGE_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				// 不能关闭最后一个标签页
-				const targets = await client.Target.getTargets();
-				const pageTargets = targets.targetInfos.filter((t) => t.type === "page");
-				if (pageTargets.length <= 1) {
+				const info = connection?.uidMap.get(params.uid);
+				if (!info) {
 					return {
-						content: [
-							{ type: "text", text: "无法关闭最后一个标签页" },
-						],
+						content: [{ type: "text", text: `未找到 uid: ${params.uid}` }],
 						details: { success: false },
 						isError: true,
 					};
 				}
 
-				await client.Target.closeTarget({ targetId: params.targetId });
+				const nodeId = parseInt(info.selector.replace("#", ""), 10);
+				await client.DOM.setFileInputFiles({ nodeId, files: [params.filePath] });
 
-				// 如果关闭的是当前标签页，切换到其他标签页
-				if (connection?.target === params.targetId) {
-					await disconnect();
-					const remaining = pageTargets.filter((t) => t.targetId !== params.targetId);
-					if (remaining.length > 0) {
-						const newClient = await CDP({
-							port: configuredPort,
-							target: remaining[0].targetId,
-						});
-						connection = { client: newClient, target: remaining[0].targetId };
-						newClient.on("disconnect", () => {
-							connection = null;
-						});
-					}
+				let result = `已上传文件: ${params.filePath}`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
 				}
 
 				return {
-					content: [{ type: "text", text: `已关闭标签页: ${params.targetId}` }],
-					details: { success: true, targetId: params.targetId },
+					content: [{ type: "text", text: result }],
+					details: { success: true },
 				};
 			} catch (err) {
 				return {
@@ -1412,85 +676,180 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------- browser_drag ----------
+	// ---------- drag ----------
 	pi.registerTool({
-		name: "browser_drag",
+		name: "drag",
 		label: "Drag",
-		description: "将一个元素拖拽到另一个元素上。",
-		parameters: DRAG_PARAMS,
+		description: "拖拽元素到另一个元素",
+		parameters: Type.Object({
+			from_uid: Type.String({ description: "起始元素 uid" }),
+			to_uid: Type.String({ description: "目标元素 uid" }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				// 获取两个元素的位置
-				const result = await client.Runtime.evaluate({
-					expression: `
-						(() => {
-							const from = document.querySelector('${cssEscape(params.fromSelector)}');
-							const to = document.querySelector('${cssEscape(params.toSelector)}');
-							if (!from) return { error: 'Source element not found' };
-							if (!to) return { error: 'Target element not found' };
-							const fromRect = from.getBoundingClientRect();
-							const toRect = to.getBoundingClientRect();
-							return {
-								from: { x: fromRect.x + fromRect.width / 2, y: fromRect.y + fromRect.height / 2 },
-								to: { x: toRect.x + toRect.width / 2, y: toRect.y + toRect.height / 2 }
-							};
-						})()
-					`,
-					returnByValue: true,
-				});
-
-				const positions = result.result.value;
-				if (positions.error) {
+				const fromInfo = connection?.uidMap.get(params.from_uid);
+				const toInfo = connection?.uidMap.get(params.to_uid);
+				if (!fromInfo || !toInfo) {
 					return {
-						content: [{ type: "text", text: positions.error }],
+						content: [{ type: "text", text: `未找到元素` }],
 						details: { success: false },
 						isError: true,
 					};
 				}
 
-				// 模拟拖拽：mouseMoved -> mousePressed -> mouseMoved -> mouseReleased
-				await client.Input.dispatchMouseEvent({
-					type: "mouseMoved",
-					x: positions.from.x,
-					y: positions.from.y,
-				});
-				await client.Input.dispatchMouseEvent({
-					type: "mousePressed",
-					x: positions.from.x,
-					y: positions.from.y,
-					button: "left",
-					clickCount: 1,
-				});
-				// 移动到目标
+				const fromNodeId = parseInt(fromInfo.selector.replace("#", ""), 10);
+				const toNodeId = parseInt(toInfo.selector.replace("#", ""), 10);
+				const fromBox = await client.DOM.getBoxModel({ nodeId: fromNodeId });
+				const toBox = await client.DOM.getBoxModel({ nodeId: toNodeId });
+
+				if (!fromBox.model || !toBox.model) {
+					return {
+						content: [{ type: "text", text: "无法获取元素位置" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				const fromX = (fromBox.model.content[0] + fromBox.model.content[2]) / 2;
+				const fromY = (fromBox.model.content[1] + fromBox.model.content[5]) / 2;
+				const toX = (toBox.model.content[0] + toBox.model.content[2]) / 2;
+				const toY = (toBox.model.content[1] + toBox.model.content[5]) / 2;
+
+				await client.Input.dispatchMouseEvent({ type: "mouseMoved", x: fromX, y: fromY });
+				await client.Input.dispatchMouseEvent({ type: "mousePressed", x: fromX, y: fromY, button: "left", clickCount: 1 });
+				
 				const steps = 10;
 				for (let i = 1; i <= steps; i++) {
-					const x = positions.from.x + ((positions.to.x - positions.from.x) * i) / steps;
-					const y = positions.from.y + ((positions.to.y - positions.from.y) * i) / steps;
-					await client.Input.dispatchMouseEvent({
-						type: "mouseMoved",
-						x,
-						y,
-						button: "left",
-					});
-					await sleep(20);
+					const x = fromX + ((toX - fromX) * i) / steps;
+					const y = fromY + ((toY - fromY) * i) / steps;
+					await client.Input.dispatchMouseEvent({ type: "mouseMoved", x, y, button: "left" });
 				}
-				await client.Input.dispatchMouseEvent({
-					type: "mouseReleased",
-					x: positions.to.x,
-					y: positions.to.y,
-					button: "left",
-					clickCount: 1,
-				});
+				
+				await client.Input.dispatchMouseEvent({ type: "mouseReleased", x: toX, y: toY, button: "left", clickCount: 1 });
+
+				let result = `已拖拽 [${params.from_uid}] 到 [${params.to_uid}]`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `已将元素从 (${Math.round(positions.from.x)}, ${Math.round(positions.from.y)}) 拖拽到 (${Math.round(positions.to.x)}, ${Math.round(positions.to.y)})`,
-						},
-					],
+					content: [{ type: "text", text: result }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- fill_form ----------
+	pi.registerTool({
+		name: "fill_form",
+		label: "Fill Form",
+		description: "批量填写表单",
+		parameters: Type.Object({
+			elements: Type.Array(Type.Object({
+				uid: Type.String(),
+				value: Type.String(),
+			}), { description: "要填写的元素列表" }),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const results: string[] = [];
+
+				for (const el of params.elements) {
+					const info = connection?.uidMap.get(el.uid);
+					if (!info) {
+						results.push(`[${el.uid}] 未找到`);
+						continue;
+					}
+
+					const nodeId = parseInt(info.selector.replace("#", ""), 10);
+					await client.DOM.focus({ nodeId });
+					await client.Runtime.evaluate({
+						expression: `
+							(() => {
+								const el = document.activeElement;
+								const nativeSetter = Object.getOwnPropertyDescriptor(
+									window.HTMLInputElement.prototype, 'value'
+								)?.set || Object.getOwnPropertyDescriptor(
+									window.HTMLTextAreaElement.prototype, 'value'
+								)?.set;
+								if (nativeSetter) nativeSetter.call(el, ${JSON.stringify(el.value)});
+								else el.value = ${JSON.stringify(el.value)};
+								el.dispatchEvent(new Event('input', { bubbles: true }));
+								el.dispatchEvent(new Event('change', { bubbles: true }));
+							})()
+						`,
+						returnByValue: true,
+					});
+					results.push(`[${el.uid}] ${info.name}: "${el.value}"`);
+				}
+
+				let result = `已填写 ${params.elements.length} 个元素:\n${results.join("\n")}`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
+
+				return {
+					content: [{ type: "text", text: result }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- click_at ----------
+	pi.registerTool({
+		name: "click_at",
+		label: "Click At",
+		description: "点击指定坐标",
+		parameters: Type.Object({
+			x: Type.Number({ description: "X 坐标" }),
+			y: Type.Number({ description: "Y 坐标" }),
+			dblClick: Type.Optional(Type.Boolean({ description: "是否双击" })),
+			includeSnapshot: Type.Optional(Type.Boolean({ description: "是否返回快照" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				await client.Input.dispatchMouseEvent({ type: "mouseMoved", x: params.x, y: params.y });
+				await client.Input.dispatchMouseEvent({ type: "mousePressed", x: params.x, y: params.y, button: "left", clickCount: 1 });
+				await client.Input.dispatchMouseEvent({ type: "mouseReleased", x: params.x, y: params.y, button: "left", clickCount: 1 });
+
+				if (params.dblClick) {
+					await client.Input.dispatchMouseEvent({ type: "mousePressed", x: params.x, y: params.y, button: "left", clickCount: 2 });
+					await client.Input.dispatchMouseEvent({ type: "mouseReleased", x: params.x, y: params.y, button: "left", clickCount: 2 });
+				}
+
+				let result = `已点击坐标 (${params.x}, ${params.y})`;
+
+				if (params.includeSnapshot) {
+					const snapshot = await takeSnapshot(client);
+					result += `\n\n--- 页面快照 ---\n${snapshot}`;
+				}
+
+				return {
+					content: [{ type: "text", text: result }],
 					details: { success: true },
 				};
 			} catch (err) {
@@ -1504,294 +863,650 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 	});
 
 	// ============================================================
-	// Phase 2 工具 (调试能力)
+	// Navigation tools
 	// ============================================================
 
-	// ---------- browser_list_console ----------
+	// ---------- navigate_page ----------
 	pi.registerTool({
-		name: "browser_list_console",
-		label: "List Console",
-		description: "列出浏览器控制台消息。支持按类型过滤。",
-		parameters: LIST_CONSOLE_PARAMS,
+		name: "navigate_page",
+		label: "Navigate Page",
+		description: "导航到 URL 或执行前进/后退/刷新",
+		parameters: Type.Object({
+			type: Type.Optional(Type.Union([
+				Type.Literal("url"), Type.Literal("back"), Type.Literal("forward"), Type.Literal("reload")
+			], { description: "导航类型" })),
+			url: Type.Optional(Type.String({ description: "目标 URL" })),
+			timeout: Type.Optional(Type.Number({ description: "超时时间(ms)" })),
+			ignoreCache: Type.Optional(Type.Boolean({ description: "是否忽略缓存" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
-				await ensureConnected(configuredPort);
-				
-				if (!connection || connection.consoleMessages.length === 0) {
+				const client = await ensureConnected(configuredPort);
+				await client.Page.enable();
+
+				const navType = params.type || "url";
+
+				if (navType === "url" && params.url) {
+					await client.Page.navigate({ url: params.url });
+					await client.Page.loadEventFired();
 					return {
-						content: [{ type: "text", text: "没有控制台消息" }],
-						details: { success: true, count: 0 },
+						content: [{ type: "text", text: `已导航到: ${params.url}` }],
+						details: { success: true },
+					};
+				} else if (navType === "back") {
+					const history = await client.Page.getNavigationHistory();
+					if (history.currentIndex > 0) {
+						await client.Page.navigateToHistoryEntry({ entryId: history.entries[history.currentIndex - 1].id });
+						return { content: [{ type: "text", text: "已后退" }], details: { success: true } };
+					}
+					return { content: [{ type: "text", text: "无法后退（已在最开始）" }], details: { success: false }, isError: true };
+				} else if (navType === "forward") {
+					const history = await client.Page.getNavigationHistory();
+					if (history.currentIndex < history.entries.length - 1) {
+						await client.Page.navigateToHistoryEntry({ entryId: history.entries[history.currentIndex + 1].id });
+						return { content: [{ type: "text", text: "已前进" }], details: { success: true } };
+					}
+					return { content: [{ type: "text", text: "无法前进（已在最后）" }], details: { success: false }, isError: true };
+				} else if (navType === "reload") {
+					await client.Page.reload({ ignoreCache: params.ignoreCache });
+					await client.Page.loadEventFired();
+					return { content: [{ type: "text", text: "已刷新" }], details: { success: true } };
+				}
+
+				return { content: [{ type: "text", text: "无效的导航类型" }], details: { success: false }, isError: true };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- list_pages ----------
+	pi.registerTool({
+		name: "list_pages",
+		label: "List Pages",
+		description: "列出所有打开的页面",
+		parameters: Type.Object({}),
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Target.getTargets();
+				const pages = result.targetInfos.filter((t) => t.type === "page");
+
+				if (pages.length === 0) {
+					return { content: [{ type: "text", text: "没有打开的页面" }], details: { success: true, count: 0 } };
+				}
+
+				const lines = pages.map((p, i) => `${i + 1}. [pageId: ${i}] ${p.title}\n   URL: ${p.url}`);
+				return { content: [{ type: "text", text: lines.join("\n\n") }], details: { success: true, count: pages.length } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- select_page ----------
+	pi.registerTool({
+		name: "select_page",
+		label: "Select Page",
+		description: "选择页面作为后续操作的上下文",
+		parameters: Type.Object({
+			pageId: Type.Number({ description: "页面 ID（从 list_pages 获取）" }),
+			bringToFront: Type.Optional(Type.Boolean({ description: "是否带到前台" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Target.getTargets();
+				const pages = result.targetInfos.filter((t) => t.type === "page");
+				
+				if (params.pageId < 0 || params.pageId >= pages.length) {
+					return { content: [{ type: "text", text: `无效的 pageId: ${params.pageId}` }], details: { success: false }, isError: true };
+				}
+
+				const target = pages[params.pageId];
+				await client.Target.activateTarget({ targetId: target.targetId });
+
+				// 重新连接到新页面
+				await disconnect();
+				const newClient = await CDP({ port: configuredPort, target: target.targetId });
+				connection = { client: newClient, target: target.targetId, consoleMessages: [], networkRequests: new Map(), uidMap: new Map() };
+				newClient.on("disconnect", () => { connection = null; });
+
+				return {
+					content: [{ type: "text", text: `已选择页面: ${target.title}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- new_page ----------
+	pi.registerTool({
+		name: "new_page",
+		label: "New Page",
+		description: "打开新页面",
+		parameters: Type.Object({
+			url: Type.String({ description: "要加载的 URL" }),
+			background: Type.Optional(Type.Boolean({ description: "是否在后台打开" })),
+			timeout: Type.Optional(Type.Number({ description: "超时时间(ms)" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Target.createTarget({ url: params.url });
+
+				if (!params.background) {
+					await client.Target.activateTarget({ targetId: result.targetId });
+					await disconnect();
+					const newClient = await CDP({ port: configuredPort, target: result.targetId });
+					connection = { client: newClient, target: result.targetId, consoleMessages: [], networkRequests: new Map(), uidMap: new Map() };
+					newClient.on("disconnect", () => { connection = null; });
+				}
+
+				return {
+					content: [{ type: "text", text: `已打开新页面: ${params.url}` }],
+					details: { success: true, targetId: result.targetId },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- close_page ----------
+	pi.registerTool({
+		name: "close_page",
+		label: "Close Page",
+		description: "关闭页面",
+		parameters: Type.Object({
+			pageId: Type.Number({ description: "页面 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Target.getTargets();
+				const pages = result.targetInfos.filter((t) => t.type === "page");
+
+				if (pages.length <= 1) {
+					return { content: [{ type: "text", text: "无法关闭最后一个页面" }], details: { success: false }, isError: true };
+				}
+
+				if (params.pageId < 0 || params.pageId >= pages.length) {
+					return { content: [{ type: "text", text: `无效的 pageId: ${params.pageId}` }], details: { success: false }, isError: true };
+				}
+
+				await client.Target.closeTarget({ targetId: pages[params.pageId].targetId });
+				return { content: [{ type: "text", text: "已关闭页面" }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- wait_for ----------
+	pi.registerTool({
+		name: "wait_for",
+		label: "Wait For",
+		description: "等待指定文字出现在页面上",
+		parameters: Type.Object({
+			text: Type.Array(Type.String(), { description: "要等待的文字列表" }),
+			timeout: Type.Optional(Type.Number({ description: "超时时间(ms)", default: 30000 })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const timeout = params.timeout || 30000;
+				const startTime = Date.now();
+
+				while (Date.now() - startTime < timeout) {
+					const result = await client.Runtime.evaluate({
+						expression: `document.body.innerText`,
+						returnByValue: true,
+					});
+
+					const pageText = result.result.value || "";
+					for (const t of params.text) {
+						if (pageText.includes(t)) {
+							return {
+								content: [{ type: "text", text: `已找到文字: "${t}"` }],
+								details: { success: true },
+							};
+						}
+					}
+
+					await new Promise(r => setTimeout(r, 500));
+				}
+
+				return {
+					content: [{ type: "text", text: `等待超时 (${timeout}ms)，未找到: ${params.text.join(", ")}` }],
+					details: { success: false },
+					isError: true,
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Debugging tools
+	// ============================================================
+
+	// ---------- take_screenshot ----------
+	pi.registerTool({
+		name: "take_screenshot",
+		label: "Take Screenshot",
+		description: "截取页面或元素截图",
+		parameters: Type.Object({
+			uid: Type.Optional(Type.String({ description: "元素 uid" })),
+			fullPage: Type.Optional(Type.Boolean({ description: "是否截取完整页面" })),
+			format: Type.Optional(Type.Union([Type.Literal("png"), Type.Literal("jpeg"), Type.Literal("webp")])),
+			quality: Type.Optional(Type.Number({ description: "JPEG/WebP 质量 0-100" })),
+			filePath: Type.Optional(Type.String({ description: "保存路径" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				await client.Page.enable();
+
+				const format = params.format || "png";
+				let clip: any = undefined;
+
+				if (params.uid) {
+					const info = connection?.uidMap.get(params.uid);
+					if (info) {
+						const nodeId = parseInt(info.selector.replace("#", ""), 10);
+						const box = await client.DOM.getBoxModel({ nodeId });
+						if (box.model) {
+							clip = {
+								x: box.model.content[0],
+								y: box.model.content[1],
+								width: box.model.width,
+								height: box.model.height,
+								scale: 1,
+							};
+						}
+					}
+				}
+
+				const screenshot = await client.Page.captureScreenshot({
+					format,
+					quality: params.quality,
+					clip,
+					captureBeyondViewport: params.fullPage,
+				});
+
+				if (params.filePath) {
+					writeFileSync(params.filePath, Buffer.from(screenshot.data, "base64"));
+					return {
+						content: [{ type: "text", text: `截图已保存到: ${params.filePath}` }],
+						details: { success: true },
 					};
 				}
 
-				let messages = connection.consoleMessages;
-				
-				// 按类型过滤
+				return {
+					content: [
+						{ type: "image", source: { type: "base64", mediaType: `image/${format}`, data: screenshot.data } },
+						{ type: "text", text: params.uid ? `已截取元素 [${params.uid}]` : params.fullPage ? "已截取完整页面" : "已截取当前视口" },
+					],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- evaluate_script ----------
+	pi.registerTool({
+		name: "evaluate_script",
+		label: "Evaluate Script",
+		description: "在页面中执行 JavaScript 函数",
+		parameters: Type.Object({
+			function: Type.String({ description: "JavaScript 函数，如 () => document.title" }),
+			args: Type.Optional(Type.Array(Type.Any(), { description: "函数参数" })),
+			filePath: Type.Optional(Type.String({ description: "保存结果的文件路径" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				// 构建执行表达式
+				let expression = `(${params.function})`;
+				if (params.args && params.args.length > 0) {
+					expression += `(${params.args.map(a => JSON.stringify(a)).join(",")})`;
+				} else {
+					expression += `()`;
+				}
+
+				const result = await client.Runtime.evaluate({
+					expression,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				if (result.exceptionDetails) {
+					return {
+						content: [{ type: "text", text: `执行错误: ${result.exceptionDetails.text}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				const value = result.result.value;
+				const text = typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+
+				if (params.filePath) {
+					writeFileSync(params.filePath, text);
+					return {
+						content: [{ type: "text", text: `结果已保存到: ${params.filePath}` }],
+						details: { success: true },
+					};
+				}
+
+				return {
+					content: [{ type: "text", text }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- list_console_messages ----------
+	pi.registerTool({
+		name: "list_console_messages",
+		label: "List Console Messages",
+		description: "列出控制台消息",
+		parameters: Type.Object({
+			types: Type.Optional(Type.Array(Type.String(), { description: "过滤类型" })),
+			pageSize: Type.Optional(Type.Number({ description: "每页数量" })),
+			pageIdx: Type.Optional(Type.Number({ description: "页码" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				await ensureConnected(configuredPort);
+				let messages = connection?.consoleMessages || [];
+
 				if (params.types && params.types.length > 0) {
 					messages = messages.filter(m => params.types!.includes(m.level));
 				}
 
-				// 限制数量
-				const limit = params.limit || 100;
-				messages = messages.slice(-limit);
+				const pageSize = params.pageSize || messages.length;
+				const pageIdx = params.pageIdx || 0;
+				messages = messages.slice(pageIdx * pageSize, (pageIdx + 1) * pageSize);
 
 				if (messages.length === 0) {
-					return {
-						content: [{ type: "text", text: "没有匹配的控制台消息" }],
-						details: { success: true, count: 0 },
-					};
+					return { content: [{ type: "text", text: "没有控制台消息" }], details: { success: true, count: 0 } };
 				}
 
-				const lines = messages.map(m => {
-					const time = new Date(m.timestamp).toISOString().substr(11, 12);
-					const location = m.url ? ` (${m.url}${m.lineNumber ? `:${m.lineNumber}` : ''})` : '';
-					return `[${m.id}] [${time}] [${m.level.toUpperCase()}] ${m.text}${location}`;
-				});
-
-				return {
-					content: [{ type: "text", text: lines.join('\n') }],
-					details: { success: true, count: messages.length },
-				};
+				const lines = messages.map(m => `[${m.id}] [${m.level}] ${m.text}`);
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true, count: messages.length } };
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_get_console ----------
+	// ---------- get_console_message ----------
 	pi.registerTool({
-		name: "browser_get_console",
-		label: "Get Console",
-		description: "获取单条控制台消息的详细信息。",
-		parameters: GET_CONSOLE_PARAMS,
+		name: "get_console_message",
+		label: "Get Console Message",
+		description: "获取单条控制台消息详情",
+		parameters: Type.Object({
+			msgid: Type.Number({ description: "消息 ID" }),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				await ensureConnected(configuredPort);
-				
-				if (!connection) {
-					return {
-						content: [{ type: "text", text: "未连接到浏览器" }],
-						details: { success: false },
-						isError: true,
-					};
+				const msg = connection?.consoleMessages.find(m => m.id === params.msgid);
+				if (!msg) {
+					return { content: [{ type: "text", text: `未找到消息 ID: ${params.msgid}` }], details: { success: false }, isError: true };
 				}
-
-				const message = connection.consoleMessages.find(m => m.id === params.id);
-				if (!message) {
-					return {
-						content: [{ type: "text", text: `未找到消息 ID: ${params.id}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				const time = new Date(message.timestamp).toISOString();
-				const text = [
-					`ID: ${message.id}`,
-					`级别: ${message.level}`,
-					`时间: ${time}`,
-					`内容: ${message.text}`,
-					message.url ? `URL: ${message.url}` : null,
-					message.lineNumber ? `行号: ${message.lineNumber}` : null,
-				].filter(Boolean).join('\n');
 
 				return {
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: `[${msg.id}] [${msg.level}] ${new Date(msg.timestamp).toISOString()}\n${msg.text}${msg.url ? `\nURL: ${msg.url}` : ""}` }],
 					details: { success: true },
 				};
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_list_network ----------
+	// ---------- list_network_requests ----------
 	pi.registerTool({
-		name: "browser_list_network",
-		label: "List Network",
-		description: "列出浏览器的网络请求。支持按资源类型过滤。",
-		parameters: LIST_NETWORK_PARAMS,
+		name: "list_network_requests",
+		label: "List Network Requests",
+		description: "列出网络请求",
+		parameters: Type.Object({
+			resourceTypes: Type.Optional(Type.Array(Type.String(), { description: "过滤资源类型" })),
+			pageSize: Type.Optional(Type.Number({ description: "每页数量" })),
+			pageIdx: Type.Optional(Type.Number({ description: "页码" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				await ensureConnected(configuredPort);
-				
-				if (!connection || connection.networkRequests.size === 0) {
-					return {
-						content: [{ type: "text", text: "没有网络请求" }],
-						details: { success: true, count: 0 },
-					};
-				}
+				let requests = Array.from(connection?.networkRequests.values() || []);
 
-				let requests = Array.from(connection.networkRequests.values());
-				
-				// 按资源类型过滤
 				if (params.resourceTypes && params.resourceTypes.length > 0) {
 					requests = requests.filter(r => params.resourceTypes!.includes(r.type));
 				}
 
-				// 按时间排序（最新的在前）
 				requests.sort((a, b) => b.timestamp - a.timestamp);
 
-				// 限制数量
-				const limit = params.limit || 100;
-				requests = requests.slice(0, limit);
+				const pageSize = params.pageSize || requests.length;
+				const pageIdx = params.pageIdx || 0;
+				requests = requests.slice(pageIdx * pageSize, (pageIdx + 1) * pageSize);
 
 				if (requests.length === 0) {
-					return {
-						content: [{ type: "text", text: "没有匹配的网络请求" }],
-						details: { success: true, count: 0 },
-					};
+					return { content: [{ type: "text", text: "没有网络请求" }], details: { success: true, count: 0 } };
 				}
 
-				const lines = requests.map(r => {
-					const status = r.status ? `${r.status} ${r.statusText || ''}` : 'pending';
-					const url = r.url.length > 80 ? r.url.substring(0, 77) + '...' : r.url;
-					return `[${r.id}] ${r.method} ${status} [${r.type}] ${url}`;
-				});
-
-				return {
-					content: [{ type: "text", text: lines.join('\n') }],
-					details: { success: true, count: requests.length },
-				};
+				const lines = requests.map(r => `[${r.id}] ${r.method} ${r.status || "pending"} [${r.type}] ${r.url.substring(0, 80)}`);
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true, count: requests.length } };
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_get_network ----------
+	// ---------- get_network_request ----------
 	pi.registerTool({
-		name: "browser_get_network",
-		label: "Get Network",
-		description: "获取单个网络请求的详细信息，包括请求头、响应头、请求体和响应体。",
-		parameters: GET_NETWORK_PARAMS,
+		name: "get_network_request",
+		label: "Get Network Request",
+		description: "获取网络请求详情",
+		parameters: Type.Object({
+			reqid: Type.Optional(Type.String({ description: "请求 ID" })),
+			requestFilePath: Type.Optional(Type.String({ description: "保存请求体的路径" })),
+			responseFilePath: Type.Optional(Type.String({ description: "保存响应体的路径" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
 				
-				if (!connection) {
-					return {
-						content: [{ type: "text", text: "未连接到浏览器" }],
-						details: { success: false },
-						isError: true,
-					};
+				let req: NetworkRequest | undefined;
+				if (params.reqid) {
+					req = connection?.networkRequests.get(params.reqid);
+				} else {
+					// 获取最新的请求
+					const requests = Array.from(connection?.networkRequests.values() || []);
+					req = requests[requests.length - 1];
 				}
 
-				const request = connection.networkRequests.get(params.id);
-				if (!request) {
-					return {
-						content: [{ type: "text", text: `未找到请求 ID: ${params.id}` }],
-						details: { success: false },
-						isError: true,
-					};
+				if (!req) {
+					return { content: [{ type: "text", text: "未找到请求" }], details: { success: false }, isError: true };
 				}
 
-				// 尝试获取响应体
-				let responseBody: string | undefined;
+				// 获取响应体
+				let responseBody = "";
 				try {
-					const response = await client.Network.getResponseBody({ requestId: params.id });
+					const response = await client.Network.getResponseBody({ requestId: req.id });
 					responseBody = response.body;
 					if (response.base64Encoded) {
-						responseBody = `[Base64 编码，长度: ${responseBody.length}]`;
+						responseBody = `[Base64, ${responseBody.length} bytes]`;
 					}
 				} catch {
-					responseBody = '[无法获取响应体]';
+					responseBody = "[无法获取]";
 				}
 
 				const text = [
-					`=== 请求信息 ===`,
-					`ID: ${request.id}`,
-					`URL: ${request.url}`,
-					`方法: ${request.method}`,
-					`类型: ${request.type}`,
-					`时间: ${new Date(request.timestamp * 1000).toISOString()}`,
+					`=== 请求 ===`,
+					`URL: ${req.url}`,
+					`方法: ${req.method}`,
+					`类型: ${req.type}`,
+					`状态: ${req.status || "pending"}`,
 					``,
 					`=== 请求头 ===`,
-					request.requestHeaders ? Object.entries(request.requestHeaders).map(([k, v]) => `${k}: ${v}`).join('\n') : '(无)',
+					req.requestHeaders ? Object.entries(req.requestHeaders).map(([k, v]) => `${k}: ${v}`).join("\n") : "(无)",
 					``,
 					`=== 请求体 ===`,
-					request.requestBody || '(无)',
-					``,
-					`=== 响应信息 ===`,
-					`状态: ${request.status || 'pending'} ${request.statusText || ''}`,
+					req.requestBody || "(无)",
 					``,
 					`=== 响应头 ===`,
-					request.responseHeaders ? Object.entries(request.responseHeaders).map(([k, v]) => `${k}: ${v}`).join('\n') : '(无)',
+					req.responseHeaders ? Object.entries(req.responseHeaders).map(([k, v]) => `${k}: ${v}`).join("\n") : "(无)",
 					``,
 					`=== 响应体 ===`,
-					responseBody || '(无)',
-				].join('\n');
+					responseBody,
+				].join("\n");
 
-				return {
-					content: [{ type: "text", text }],
-					details: { success: true },
-				};
+				if (params.responseFilePath) {
+					writeFileSync(params.responseFilePath, responseBody);
+				}
+
+				return { content: [{ type: "text", text }], details: { success: true } };
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
 	// ============================================================
-	// Phase 3 工具 (高级功能)
+	// Emulation tools
 	// ============================================================
 
-	let isTracing = false;
-
-	// ---------- browser_performance_start ----------
+	// ---------- emulate ----------
 	pi.registerTool({
-		name: "browser_performance_start",
-		label: "Performance Start",
-		description: "开始性能追踪。录制完成后使用 browser_performance_stop 停止并获取结果。",
-		parameters: PERFORMANCE_START_PARAMS,
+		name: "emulate",
+		label: "Emulate",
+		description: "模拟设备特性",
+		parameters: Type.Object({
+			viewport: Type.Optional(Type.String({ description: "视口，如 '1280x720' 或 '375x667x2,mobile,touch'" })),
+			userAgent: Type.Optional(Type.String({ description: "User Agent" })),
+			colorScheme: Type.Optional(Type.Union([Type.Literal("dark"), Type.Literal("light"), Type.Literal("auto")])),
+			networkConditions: Type.Optional(Type.Union([
+				Type.Literal("Offline"), Type.Literal("Slow 3G"), Type.Literal("Fast 3G"),
+				Type.Literal("Slow 4G"), Type.Literal("Fast 4G")
+			])),
+			geolocation: Type.Optional(Type.String({ description: "地理位置，如 '39.9,116.4'" })),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
+				const results: string[] = [];
 
-				if (isTracing) {
-					return {
-						content: [{ type: "text", text: "性能追踪已在进行中，请先停止当前追踪" }],
-						details: { success: false },
-						isError: true,
-					};
+				if (params.viewport) {
+					const parts = params.viewport.split("x");
+					const width = parseInt(parts[0], 10);
+					const heightPart = parts[1] || "720";
+					const height = parseInt(heightPart.split(",")[0], 10);
+					const scale = heightPart.includes("x") ? parseFloat(heightPart.split("x")[1]) : 1;
+					const mobile = params.viewport.includes("mobile");
+
+					await client.Emulation.setDeviceMetricsOverride({ width, height, deviceScaleFactor: scale, mobile });
+					results.push(`视口: ${width}x${height}`);
 				}
 
-				// 启用 Tracing domain
-				await client.Tracing.start({
-					categories: "-*",
-					options: "trace-config",
+				if (params.userAgent) {
+					await client.Emulation.setUserAgentOverride({ userAgent: params.userAgent });
+					results.push(`UA: ${params.userAgent.substring(0, 50)}...`);
+				}
+
+				if (params.colorScheme && params.colorScheme !== "auto") {
+					await client.Emulation.setEmulatedMedia({ media: "", features: [{ name: "prefers-color-scheme", value: params.colorScheme }] });
+					results.push(`颜色: ${params.colorScheme}`);
+				}
+
+				if (params.networkConditions) {
+					const conditions: Record<string, any> = {
+						"Offline": { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 },
+						"Slow 3G": { offline: false, latency: 2000, downloadThroughput: 50 * 1024, uploadThroughput: 50 * 1024 },
+						"Fast 3G": { offline: false, latency: 500, downloadThroughput: 1.5 * 1024 * 1024, uploadThroughput: 750 * 1024 },
+						"Slow 4G": { offline: false, latency: 150, downloadThroughput: 4 * 1024 * 1024, uploadThroughput: 3 * 1024 * 1024 },
+						"Fast 4G": { offline: false, latency: 50, downloadThroughput: 10 * 1024 * 1024, uploadThroughput: 5 * 1024 * 1024 },
+					};
+					await client.Network.emulateNetworkConditions(conditions[params.networkConditions]);
+					results.push(`网络: ${params.networkConditions}`);
+				}
+
+				if (params.geolocation) {
+					const [lat, lng] = params.geolocation.split(",").map(parseFloat);
+					await client.Emulation.setGeolocationOverride({ latitude: lat, longitude: lng, accuracy: 100 });
+					results.push(`位置: ${lat}, ${lng}`);
+				}
+
+				return { content: [{ type: "text", text: `已应用:\n${results.join("\n")}` }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ---------- resize_page ----------
+	pi.registerTool({
+		name: "resize_page",
+		label: "Resize Page",
+		description: "调整页面大小",
+		parameters: Type.Object({
+			width: Type.Number({ description: "宽度" }),
+			height: Type.Number({ description: "高度" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				await client.Emulation.setDeviceMetricsOverride({
+					width: params.width, height: params.height, deviceScaleFactor: 1, mobile: false
+				});
+				return { content: [{ type: "text", text: `已调整为 ${params.width}x${params.height}` }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Performance tools
+	// ============================================================
+
+	let isTracing = false;
+	let traceData: string[] = [];
+
+	pi.registerTool({
+		name: "performance_start_trace",
+		label: "Performance Start Trace",
+		description: "开始性能追踪",
+		parameters: Type.Object({
+			reload: Type.Optional(Type.Boolean({ description: "是否刷新页面" })),
+			autoStop: Type.Optional(Type.Boolean({ description: "是否自动停止" })),
+			filePath: Type.Optional(Type.String({ description: "保存路径" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				if (isTracing) {
+					return { content: [{ type: "text", text: "追踪已在进行中" }], details: { success: false }, isError: true };
+				}
+
+				traceData = [];
+				client.Tracing.dataCollected((event) => {
+					traceData.push(...event.value.map((v: any) => JSON.stringify(v)));
 				});
 
-				// 使用更完整的配置
 				await client.Tracing.start({
-					categories: [
-						"devtools.timeline",
-						"v8.execute",
-						"disabled-by-default-devtools.timeline",
-						"disabled-by-default-devtools.timeline.frame",
-						"toplevel",
-						"blink.console",
-						"blink.user_timing",
-						"latencyInfo",
-						"disabled-by-default-devtools.timeline.stack",
-						"disabled-by-default-v8.cpu_profiler",
-					].join(","),
+					categories: "devtools.timeline,v8.execute,disabled-by-default-devtools.timeline",
 					transferMode: "ReturnAsStream",
 				});
 
@@ -1801,567 +1516,182 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 					await client.Page.reload();
 				}
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: `性能追踪已开始${params.reload ? "，页面已刷新" : ""}。使用 browser_performance_stop 停止追踪。`,
-						},
-					],
-					details: { success: true, tracing: true },
-				};
+				return { content: [{ type: "text", text: "性能追踪已开始" }], details: { success: true } };
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_performance_stop ----------
 	pi.registerTool({
-		name: "browser_performance_stop",
-		label: "Performance Stop",
-		description: "停止性能追踪并返回追踪数据摘要。",
-		parameters: PERFORMANCE_STOP_PARAMS,
-		async execute() {
+		name: "performance_stop_trace",
+		label: "Performance Stop Trace",
+		description: "停止性能追踪",
+		parameters: Type.Object({
+			filePath: Type.Optional(Type.String({ description: "保存路径" })),
+		}),
+		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
 				if (!isTracing) {
-					return {
-						content: [{ type: "text", text: "没有正在进行的性能追踪" }],
-						details: { success: false },
-						isError: true,
-					};
+					return { content: [{ type: "text", text: "没有正在进行的追踪" }], details: { success: false }, isError: true };
 				}
 
-				// 等待追踪完成
-				const traceComplete = new Promise<void>((resolve) => {
-					client.Tracing.tracingComplete(() => {
-						resolve();
-					});
+				await new Promise<void>((resolve) => {
+					client.Tracing.tracingComplete(() => resolve());
+					client.Tracing.end();
 				});
-
-				await client.Tracing.end();
-				await traceComplete;
 
 				isTracing = false;
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: "性能追踪已停止。追踪数据已通过 CDP 流式传输完成。",
-						},
-					],
-					details: { success: true, tracing: false },
-				};
+				if (params.filePath) {
+					writeFileSync(params.filePath, traceData.join("\n"));
+					return { content: [{ type: "text", text: `追踪数据已保存到: ${params.filePath}` }], details: { success: true } };
+				}
+
+				return { content: [{ type: "text", text: `追踪完成，收集了 ${traceData.length} 条记录` }], details: { success: true } };
 			} catch (err) {
 				isTracing = false;
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_emulate ----------
-	pi.registerTool({
-		name: "browser_emulate",
-		label: "Emulate",
-		description: "模拟各种设备特性：视口大小、User Agent、颜色方案、网络条件、地理位置等。",
-		parameters: EMULATE_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-				const results: string[] = [];
-
-				// 视口模拟
-				if (params.viewport) {
-					const parts = params.viewport.split("x");
-					const width = parseInt(parts[0], 10);
-					const height = parseInt(parts[1], 10);
-					const deviceScaleFactor = parts[2] ? parseFloat(parts[2].split(",")[0]) : 1;
-					const mobile = params.viewport.includes("mobile");
-					const touch = params.viewport.includes("touch");
-
-					await client.Emulation.setDeviceMetricsOverride({
-						width,
-						height,
-						deviceScaleFactor,
-						mobile,
-					});
-
-					if (touch) {
-						await client.Emulation.setTouchEmulationEnabled({ enabled: true });
-					}
-
-					results.push(`视口: ${width}x${height} @${deviceScaleFactor}x${mobile ? " (mobile)" : ""}${touch ? " (touch)" : ""}`);
-				}
-
-				// User Agent 模拟
-				if (params.userAgent) {
-					await client.Emulation.setUserAgentOverride({
-						userAgent: params.userAgent,
-					});
-					results.push(`User Agent: ${params.userAgent}`);
-				}
-
-				// 颜色方案模拟
-				if (params.colorScheme) {
-					const scheme = params.colorScheme === "auto" ? "" : params.colorScheme;
-					await client.Emulation.setEmulatedMedia({
-						media: "",
-						features: scheme ? [{ name: "prefers-color-scheme", value: scheme }] : [],
-					});
-					results.push(`颜色方案: ${params.colorScheme}`);
-				}
-
-				// 网络条件模拟
-				if (params.networkConditions) {
-					const conditions: Record<string, { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number }> = {
-						"Offline": { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 },
-						"Slow 3G": { offline: false, latency: 2000, downloadThroughput: 50 * 1024, uploadThroughput: 50 * 1024 },
-						"Fast 3G": { offline: false, latency: 500, downloadThroughput: 1.5 * 1024 * 1024, uploadThroughput: 750 * 1024 },
-						"Slow 4G": { offline: false, latency: 150, downloadThroughput: 4 * 1024 * 1024, uploadThroughput: 3 * 1024 * 1024 },
-						"Fast 4G": { offline: false, latency: 50, downloadThroughput: 10 * 1024 * 1024, uploadThroughput: 5 * 1024 * 1024 },
-					};
-					const cond = conditions[params.networkConditions];
-					if (cond) {
-						await client.Network.emulateNetworkConditions({
-							offline: cond.offline,
-							latency: cond.latency,
-							downloadThroughput: cond.downloadThroughput,
-							uploadThroughput: cond.uploadThroughput,
-						});
-						results.push(`网络条件: ${params.networkConditions}`);
-					}
-				}
-
-				// 地理位置模拟
-				if (params.geolocation) {
-					const [lat, lng] = params.geolocation.split(",").map(parseFloat);
-					if (!isNaN(lat) && !isNaN(lng)) {
-						await client.Emulation.setGeolocationOverride({
-							latitude: lat,
-							longitude: lng,
-							accuracy: 100,
-						});
-						results.push(`地理位置: ${lat}, ${lng}`);
-					}
-				}
-
-				if (results.length === 0) {
-					return {
-						content: [{ type: "text", text: "未指定任何模拟参数" }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				return {
-					content: [{ type: "text", text: `已应用模拟设置:\n${results.join("\n")}` }],
-					details: { success: true },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_resize ----------
-	pi.registerTool({
-		name: "browser_resize",
-		label: "Resize",
-		description: "调整浏览器窗口大小。",
-		parameters: RESIZE_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				await client.Emulation.setDeviceMetricsOverride({
-					width: params.width,
-					height: params.height,
-					deviceScaleFactor: 1,
-					mobile: false,
-				});
-
-				return {
-					content: [{ type: "text", text: `已调整窗口大小为 ${params.width}x${params.height}` }],
-					details: { success: true, width: params.width, height: params.height },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
 	// ============================================================
-	// Phase 4 工具 (内存分析)
+	// Memory tools
 	// ============================================================
 
-	// ---------- browser_heap_snapshot ----------
 	pi.registerTool({
-		name: "browser_heap_snapshot",
-		label: "Heap Snapshot",
-		description: "捕获当前页面的堆快照，用于分析内存分布和调试内存泄漏。",
-		parameters: HEAP_SNAPSHOT_PARAMS,
+		name: "take_heapsnapshot",
+		label: "Take Heap Snapshot",
+		description: "捕获堆快照",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "保存路径" }),
+		}),
 		async execute(_toolCallId, params) {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				// 启用 HeapProfiler domain
 				await client.HeapProfiler.enable();
 
-				// 收集快照数据
 				const chunks: string[] = [];
-				const snapshotComplete = new Promise<void>((resolve) => {
-					client.HeapProfiler.addHeapSnapshotChunk((event) => {
-						chunks.push(event.chunk);
-					});
+				client.HeapProfiler.addHeapSnapshotChunk((event) => chunks.push(event.chunk));
+
+				await new Promise<void>((resolve) => {
 					client.HeapProfiler.reportHeapSnapshotProgress((event) => {
-						if (event.finished) {
-							resolve();
-						}
+						if (event.finished) resolve();
 					});
+					client.HeapProfiler.takeHeapSnapshot({ reportProgress: true });
 				});
 
-				await client.HeapProfiler.takeHeapSnapshot({ reportProgress: true });
-				await snapshotComplete;
-
-				// 保存到文件
-				const { writeFileSync } = await import("node:fs");
 				writeFileSync(params.filePath, chunks.join(""));
-
 				await client.HeapProfiler.disable();
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `堆快照已保存到: ${params.filePath}\n大小: ${(chunks.join("").length / 1024 / 1024).toFixed(2)} MB`,
-						},
-					],
-					details: { success: true, filePath: params.filePath },
+					content: [{ type: "text", text: `堆快照已保存: ${params.filePath} (${(chunks.join("").length / 1024 / 1024).toFixed(2)} MB)` }],
+					details: { success: true },
 				};
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_heap_compare ----------
 	pi.registerTool({
-		name: "browser_heap_compare",
-		label: "Heap Compare",
-		description: "比较两个堆快照，显示内存变化摘要。",
-		parameters: HEAP_COMPARE_PARAMS,
+		name: "compare_heapsnapshots",
+		label: "Compare Heap Snapshots",
+		description: "比较两个堆快照",
+		parameters: Type.Object({
+			baseFilePath: Type.String({ description: "基准快照路径" }),
+			currentFilePath: Type.String({ description: "当前快照路径" }),
+		}),
 		async execute(_toolCallId, params) {
 			try {
-				const { readFileSync, existsSync } = await import("node:fs");
-
-				if (!existsSync(params.baseFilePath)) {
-					return {
-						content: [{ type: "text", text: `基准快照文件不存在: ${params.baseFilePath}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-				if (!existsSync(params.currentFilePath)) {
-					return {
-						content: [{ type: "text", text: `当前快照文件不存在: ${params.currentFilePath}` }],
-						details: { success: false },
-						isError: true,
-					};
+				if (!existsSync(params.baseFilePath) || !existsSync(params.currentFilePath)) {
+					return { content: [{ type: "text", text: "快照文件不存在" }], details: { success: false }, isError: true };
 				}
 
-				// 读取文件大小
 				const baseSize = readFileSync(params.baseFilePath).length;
 				const currentSize = readFileSync(params.currentFilePath).length;
-
 				const diff = currentSize - baseSize;
-				const percent = ((diff / baseSize) * 100).toFixed(2);
 
 				return {
-					content: [
-						{
-							type: "text",
-							text: `堆快照对比结果:\n\n基准快照: ${params.baseFilePath}\n  大小: ${(baseSize / 1024 / 1024).toFixed(2)} MB\n\n当前快照: ${params.currentFilePath}\n  大小: ${(currentSize / 1024 / 1024).toFixed(2)} MB\n\n变化: ${diff > 0 ? "+" : ""}${(diff / 1024 / 1024).toFixed(2)} MB (${percent}%)\n\n注意: 详细对比需要使用 Chrome DevTools 打开快照文件进行分析。`,
-						},
-					],
-					details: {
-						success: true,
-						baseSize,
-						currentSize,
-						diff,
-					},
+					content: [{
+						type: "text",
+						text: `基准: ${(baseSize / 1024 / 1024).toFixed(2)} MB\n当前: ${(currentSize / 1024 / 1024).toFixed(2)} MB\n变化: ${diff > 0 ? "+" : ""}${(diff / 1024 / 1024).toFixed(2)} MB`,
+					}],
+					details: { success: true, diff },
 				};
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
 	// ============================================================
-	// Phase 5 工具 (扩展功能)
+	// Extension tools
 	// ============================================================
 
-	// ---------- browser_install_extension ----------
 	pi.registerTool({
-		name: "browser_install_extension",
-		label: "Install Extension",
-		description: "安装 Chrome 扩展（需要浏览器启动时添加 --load-extension 参数）。注意：此功能需要浏览器支持扩展加载。",
-		parameters: INSTALL_EXTENSION_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const { existsSync } = await import("node:fs");
-
-				if (!existsSync(params.path)) {
-					return {
-						content: [{ type: "text", text: `扩展目录不存在: ${params.path}` }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `扩展安装说明:\n\n路径: ${params.path}\n\nChrome 扩展需要在浏览器启动时通过 --load-extension 参数加载:\n\nchrome.exe --load-extension="${params.path}"\n\n或者在 Edge 中:\nmsedge.exe --load-extension="${params.path}"\n\n注意: 已运行的浏览器无法动态加载扩展，需要重启浏览器。`,
-						},
-					],
-					details: { success: true, path: params.path },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_list_extensions ----------
-	pi.registerTool({
-		name: "browser_list_extensions",
+		name: "list_extensions",
 		label: "List Extensions",
-		description: "列出浏览器中已安装的扩展。",
+		description: "列出已安装的扩展",
 		parameters: Type.Object({}),
 		async execute() {
 			try {
 				const client = await ensureConnected(configuredPort);
-
-				// 通过 evaluate 获取扩展信息
 				const result = await client.Runtime.evaluate({
 					expression: `
-						(() => {
-							// 尝试通过 chrome.management API 获取扩展列表
+						new Promise((resolve) => {
 							if (typeof chrome !== 'undefined' && chrome.management) {
-								return new Promise((resolve) => {
-									chrome.management.getAll((extensions) => {
-										resolve(JSON.stringify(extensions.map(e => ({
-											id: e.id,
-											name: e.name,
-											version: e.version,
-											enabled: e.enabled,
-											type: e.type
-										}))));
-									});
-								});
+								chrome.management.getAll((exts) => resolve(JSON.stringify(exts.map(e => ({
+									id: e.id, name: e.name, version: e.version, enabled: e.enabled
+								}))));
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management 不可用' }));
 							}
-							return JSON.stringify({ error: 'chrome.management API 不可用，扩展可能未加载' });
-						})()
+						})
 					`,
 					returnByValue: true,
 					awaitPromise: true,
 				});
 
 				const data = JSON.parse(result.result.value);
-				
 				if (data.error) {
-					return {
-						content: [{ type: "text", text: data.error }],
-						details: { success: false },
-						isError: true,
-					};
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
 				}
 
 				if (!Array.isArray(data) || data.length === 0) {
-					return {
-						content: [{ type: "text", text: "没有找到已安装的扩展" }],
-						details: { success: true, count: 0 },
-					};
+					return { content: [{ type: "text", text: "没有已安装的扩展" }], details: { success: true, count: 0 } };
 				}
 
-				const lines = data.map((e: { id: string; name: string; version: string; enabled: boolean; type: string }, i: number) => {
-					return `${i + 1}. ${e.name} v${e.version}\n   ID: ${e.id}\n   状态: ${e.enabled ? "已启用" : "已禁用"}\n   类型: ${e.type}`;
-				});
-
-				return {
-					content: [{ type: "text", text: lines.join("\n\n") }],
-					details: { success: true, count: data.length },
-				};
+				const lines = data.map((e: any, i: number) => `${i + 1}. ${e.name} v${e.version} [${e.id}] ${e.enabled ? "✓" : "✗"}`);
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true, count: data.length } };
 			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
 			}
 		},
 	});
 
-	// ---------- browser_enable_extension ----------
-	pi.registerTool({
-		name: "browser_enable_extension",
-		label: "Enable Extension",
-		description: "启用指定的 Chrome 扩展。",
-		parameters: EXTENSION_ACTION_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Runtime.evaluate({
-					expression: `
-						new Promise((resolve) => {
-							if (typeof chrome !== 'undefined' && chrome.management) {
-								chrome.management.setEnabled('${params.id}', true, () => {
-									resolve(JSON.stringify({ success: true }));
-								});
-							} else {
-								resolve(JSON.stringify({ error: 'chrome.management API 不可用' }));
-							}
-						})
-					`,
-					returnByValue: true,
-					awaitPromise: true,
-				});
-
-				const data = JSON.parse(result.result.value);
-				
-				if (data.error) {
-					return {
-						content: [{ type: "text", text: data.error }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				return {
-					content: [{ type: "text", text: `已启用扩展: ${params.id}` }],
-					details: { success: true },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- browser_disable_extension ----------
-	pi.registerTool({
-		name: "browser_disable_extension",
-		label: "Disable Extension",
-		description: "禁用指定的 Chrome 扩展。",
-		parameters: EXTENSION_ACTION_PARAMS,
-		async execute(_toolCallId, params) {
-			try {
-				const client = await ensureConnected(configuredPort);
-
-				const result = await client.Runtime.evaluate({
-					expression: `
-						new Promise((resolve) => {
-							if (typeof chrome !== 'undefined' && chrome.management) {
-								chrome.management.setEnabled('${params.id}', false, () => {
-									resolve(JSON.stringify({ success: true }));
-								});
-							} else {
-								resolve(JSON.stringify({ error: 'chrome.management API 不可用' }));
-							}
-						})
-					`,
-					returnByValue: true,
-					awaitPromise: true,
-				});
-
-				const data = JSON.parse(result.result.value);
-				
-				if (data.error) {
-					return {
-						content: [{ type: "text", text: data.error }],
-						details: { success: false },
-						isError: true,
-					};
-				}
-
-				return {
-					content: [{ type: "text", text: `已禁用扩展: ${params.id}` }],
-					details: { success: true },
-				};
-			} catch (err) {
-				return {
-					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
-					details: { success: false },
-					isError: true,
-				};
-			}
-		},
-	});
-
-	// ---------- 生命周期 ----------
+	// ============================================================
+	// Lifecycle
+	// ============================================================
 
 	pi.on("session_start", async (_event, ctx) => {
-		// 加载配置
 		const config = loadConfig(ctx.cwd);
 		configuredPort = config.port;
 		configSource = config.source;
 
-		// 尝试连接，报告状态
 		try {
 			await ensureConnected(configuredPort);
-			ctx.ui.notify(
-				`Chrome DevTools 已连接 (port ${configuredPort}, 来源: ${configSource})`,
-				"info",
-			);
+			ctx.ui.notify(`Chrome DevTools 已连接 (port ${configuredPort})`, "info");
 		} catch {
-			ctx.ui.notify(
-				`Chrome DevTools 未连接 (port ${configuredPort}, 来源: ${configSource})，请确保浏览器已启动调试端口`,
-				"warning",
-			);
+			ctx.ui.notify(`Chrome DevTools 未连接 (port ${configuredPort})`, "warning");
 		}
 	});
 
 	pi.on("session_shutdown", async () => {
 		await disconnect();
 	});
-
-	// ---------- 命令 ----------
 
 	pi.registerCommand("chrome-port", {
 		description: "设置 Chrome 调试端口: /chrome-port <port>",
@@ -2371,64 +1701,23 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("用法: /chrome-port <1-65535>", "warning");
 				return;
 			}
-
 			configuredPort = port;
 			await disconnect();
-
 			try {
 				await ensureConnected(configuredPort);
-				ctx.ui.notify(`已切换到端口 ${port} 并连接成功`, "info");
+				ctx.ui.notify(`已连接到端口 ${port}`, "info");
 			} catch {
-				ctx.ui.notify(`已切换到端口 ${port}，但连接失败`, "warning");
-			}
-		},
-	});
-
-	pi.registerCommand("chrome-status", {
-		description: "查看 Chrome DevTools 连接状态和配置来源",
-		handler: async (_args, ctx) => {
-			if (connection) {
-				ctx.ui.notify(
-					`已连接: ${connection.target}\n端口配置来源: ${configSource}`,
-					"info",
-				);
-			} else {
-				ctx.ui.notify(
-					`未连接\n端口: ${configuredPort}\n来源: ${configSource}`,
-					"warning",
-				);
+				ctx.ui.notify(`连接端口 ${port} 失败`, "warning");
 			}
 		},
 	});
 }
 
 // ============================================================
-// 工具函数
+// Utils
 // ============================================================
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function errorMessage(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
-}
-
-/**
- * 转义 CSS 选择器中的特殊字符，防止注入
- */
-function cssEscape(selector: string): string {
-	return selector.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
-}
-
-/**
- * 转义 JS 字符串中的特殊字符
- */
-function jsEscape(str: string): string {
-	return str
-		.replace(/\\/g, "\\\\")
-		.replace(/'/g, "\\'")
-		.replace(/\n/g, "\\n")
-		.replace(/\r/g, "\\r");
 }

@@ -15,9 +15,12 @@
 
 pi 不支持 MCP，采用 extension + custom tools 机制。
 
-### 参考实现
+### 为什么完全兼容 chrome-devtools-mcp？
 
-[chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) 是 Google 官方的 Chrome DevTools MCP Server，提供 52 个工具。我们以其为参考，实现相同的功能集。
+1. **无缝切换**：用户可以从 MCP 无缝切换到 pi，无需改变使用习惯
+2. **工具名称一致**：降低学习成本
+3. **参数签名一致**：现有 prompt 和 skill 可以直接复用
+4. **生态复用**：chrome-devtools-mcp 是 Google 官方维护的成熟项目
 
 ## 架构
 
@@ -25,7 +28,8 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 ┌─────────────────────────────────────┐
 │  pi Extension (TypeScript)          │
 │                                     │
-│  pi.registerTool("browser_xxx")     │
+│  52 个工具 (与 chrome-devtools-mcp  │
+│  完全一致的名称和参数)              │
 │         │                           │
 │         ▼                           │
 │  chrome-remote-interface (CDP)      │
@@ -35,13 +39,19 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 └─────────────────────────────────────┘
 ```
 
-### 数据流
+### UID 系统
 
-1. LLM 发起 tool_call
-2. pi 路由到对应的 browser_xxx tool
-3. tool 通过 chrome-remote-interface 发送 CDP 命令
-4. 浏览器执行并返回结果
-5. tool 格式化结果返回给 LLM
+chrome-devtools-mcp 使用 uid（而非 CSS selector）定位元素：
+
+1. `take_snapshot` 调用 `Accessibility.getFullAXTree` 获取 a11y tree
+2. 为每个可交互元素分配唯一 uid
+3. 建立 uid -> backendNodeId 映射
+4. 后续工具使用 uid 操作元素
+
+```
+take_snapshot() -> uid1, uid2, uid3...
+click({ uid: "uid1" }) -> 通过 backendNodeId 定位并点击
+```
 
 ## 配置
 
@@ -52,135 +62,102 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 3. **全局配置** `~/.pi/agent/chrome-devtools.json` - 全局默认
 4. **默认值** `19999` - 兜底
 
-## 功能规划
+## 工具实现
 
-### 与 chrome-devtools-mcp 功能对比
+### Input automation (10/10)
 
-| 类别 | 工具数 | 已实现 | 待实现 |
-|------|--------|--------|--------|
-| Input automation | 10 | 7 | 3 |
-| Navigation | 6 | 6 | 0 |
-| Emulation | 2 | 0 | 2 |
-| Performance | 3 | 0 | 3 |
-| Network | 2 | 2 | 0 |
-| Debugging | 8 | 5 | 3 |
-| Memory | 12 | 0 | 12 |
-| Extensions | 5 | 0 | 5 |
-| Third-party | 2 | 0 | 2 |
-| WebMCP | 2 | 0 | 2 |
-| **总计** | **52** | **20** | **32** |
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `click` | DOM.focus + Input.dispatchMouseEvent | ✅ |
+| `drag` | Input.dispatchMouseEvent 序列 | ✅ |
+| `fill` | DOM.focus + Runtime.evaluate | ✅ |
+| `fill_form` | 批量 fill | ✅ |
+| `handle_dialog` | Page.handleJavaScriptDialog | ✅ |
+| `hover` | Input.dispatchMouseEvent | ✅ |
+| `press_key` | Input.dispatchKeyEvent | ✅ |
+| `type_text` | Input.dispatchKeyEvent 序列 | ✅ |
+| `upload_file` | DOM.setFileInputFiles | ✅ |
+| `click_at` | Input.dispatchMouseEvent | ✅ |
 
-### 已实现的工具 (31 个)
+### Navigation automation (6/6)
 
-### Phase 1: 核心自动化 (17 个)
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `close_page` | Target.closeTarget | ✅ |
+| `list_pages` | Target.getTargets | ✅ |
+| `navigate_page` | Page.navigate / Page.navigateToHistoryEntry / Page.reload | ✅ |
+| `new_page` | Target.createTarget | ✅ |
+| `select_page` | Target.activateTarget | ✅ |
+| `wait_for` | Runtime.evaluate 轮询 | ✅ |
 
-| Tool | 对应 MCP 工具 | CDP Domain |
-|------|--------------|------------|
-| `browser_navigate` | `navigate_page` | Page.navigate |
-| `browser_screenshot` | `take_screenshot` | Page.captureScreenshot |
-| `browser_get_text` | - | Runtime.evaluate |
-| `browser_evaluate` | `evaluate_script` | Runtime.evaluate |
-| `browser_click` | `click` | Runtime.evaluate |
-| `browser_type` | `type_text` | Runtime.evaluate |
-| `browser_fill` | `fill` | Runtime.evaluate |
-| `browser_hover` | `hover` | Input.dispatchMouseEvent |
-| `browser_press_key` | `press_key` | Input.dispatchKeyEvent |
-| `browser_handle_dialog` | `handle_dialog` | Page.handleJavaScriptDialog |
-| `browser_wait` | `wait_for` | Runtime.evaluate |
-| `browser_get_url` | - | Runtime.evaluate |
-| `browser_list_tabs` | `list_pages` | Target.getTargets |
-| `browser_switch_tab` | `select_page` | Target.activateTarget |
-| `browser_new_page` | `new_page` | Target.createTarget |
-| `browser_close_page` | `close_page` | Target.closeTarget |
-| `browser_drag` | `drag` | Input.dispatchMouseEvent 序列 |
+### Emulation (2/2)
 
-### Phase 2: 调试能力 (4 个)
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `emulate` | Emulation domain | ✅ |
+| `resize_page` | Emulation.setDeviceMetricsOverride | ✅ |
 
-| Tool | 对应 MCP 工具 | CDP Domain |
-|------|--------------|------------|
-| `browser_list_console` | `list_console_messages` | Log + Runtime.consoleAPICalled |
-| `browser_get_console` | `get_console_message` | 内存缓存 |
-| `browser_list_network` | `list_network_requests` | Network domain |
-| `browser_get_network` | `get_network_request` | Network.getResponseBody |
+### Performance (2/3)
 
-### Phase 3: 高级功能 (4 个)
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `performance_start_trace` | Tracing.start | ✅ |
+| `performance_stop_trace` | Tracing.end | ✅ |
+| `performance_analyze_insight` | 解析 trace 数据 | ⏳ |
 
-| Tool | 对应 MCP 工具 | CDP Domain |
-|------|--------------|------------|
-| `browser_performance_start` | `performance_start_trace` | Tracing.start |
-| `browser_performance_stop` | `performance_stop_trace` | Tracing.end |
-| `browser_emulate` | `emulate` | Emulation domain |
-| `browser_resize` | `resize_page` | Emulation.setDeviceMetricsOverride |
+### Network (2/2)
 
-### Phase 4: 内存分析 (2 个)
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `list_network_requests` | Network domain | ✅ |
+| `get_network_request` | Network.getResponseBody | ✅ |
 
-| Tool | 对应 MCP 工具 | CDP Domain |
-|------|--------------|------------|
-| `browser_heap_snapshot` | `take_heapsnapshot` | HeapProfiler.takeHeapSnapshot |
-| `browser_heap_compare` | `compare_heapsnapshots` | 文件大小对比 |
+### Debugging (5/8)
 
-### Phase 5: 扩展功能 (4 个)
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `evaluate_script` | Runtime.evaluate | ✅ |
+| `get_console_message` | 内存缓存 | ✅ |
+| `list_console_messages` | Log + Runtime.consoleAPICalled | ✅ |
+| `take_screenshot` | Page.captureScreenshot | ✅ |
+| `take_snapshot` | Accessibility.getFullAXTree | ✅ |
+| `lighthouse_audit` | 需要集成 lighthouse | ⏳ |
+| `screencast_start` | 需要 ffmpeg | ⏳ |
+| `screencast_stop` | 需要 ffmpeg | ⏳ |
 
-| Tool | 对应 MCP 工具 | CDP Domain |
-|------|--------------|------------|
-| `browser_install_extension` | `install_extension` | 说明文档 |
-| `browser_list_extensions` | `list_extensions` | chrome.management API |
-| `browser_enable_extension` | - | chrome.management.setEnabled |
-| `browser_disable_extension` | - | chrome.management.setEnabled |
+### Memory (2/12)
 
-### 分阶段实现计划
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `take_heapsnapshot` | HeapProfiler.takeHeapSnapshot | ✅ |
+| `compare_heapsnapshots` | 文件大小对比 | ✅ |
+| `close_heapsnapshot` | 释放内存 | ⏳ |
+| `get_heapsnapshot_*` (9 个) | 解析快照二进制格式 | ⏳ |
 
-#### Phase 1: 核心自动化（✅ 已完成）
+### Extensions (1/5)
 
-| 工具 | 说明 | CDP 实现 |
-|------|------|----------|
-| `browser_fill` | 表单填写 | Runtime.evaluate + input event |
-| `browser_hover` | 悬停元素 | Input.dispatchMouseEvent |
-| `browser_press_key` | 按键 | Input.dispatchKeyEvent |
-| `browser_handle_dialog` | 处理弹窗 | Page.handleJavaScriptDialog |
-| `browser_new_page` | 新建标签页 | Target.createTarget |
-| `browser_close_page` | 关闭标签页 | Target.closeTarget |
-| `browser_drag` | 拖拽 | Input.dispatchMouseEvent 序列 |
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `list_extensions` | chrome.management API | ✅ |
+| `install_extension` | 需要 pipe 连接 | ⏳ |
+| `reload_extension` | chrome.management | ⏳ |
+| `trigger_extension_action` | 模拟点击 | ⏳ |
+| `uninstall_extension` | chrome.management | ⏳ |
 
-#### Phase 2: 调试能力（✅ 已完成）
+### Third-party (0/2)
 
-| 工具 | 说明 | CDP 实现 |
-|------|------|----------|
-| `browser_list_console` | 控制台消息列表 | Log + Runtime.consoleAPICalled |
-| `browser_get_console` | 获取单条消息 | 内存缓存 |
-| `browser_list_network` | 网络请求列表 | Network domain |
-| `browser_get_network` | 获取请求详情 | Network.getResponseBody |
+需要 Chrome 150+ `--enable-features=ThirdPartyDeveloperTools`
 
-#### Phase 3: 高级功能 (✅ 已完成)
+### WebMCP (0/2)
 
-| 工具 | 说明 | CDP 实现 |
-|------|------|----------|
-| `browser_performance_start` | 开始性能追踪 | Tracing.start |
-| `browser_performance_stop` | 停止性能追踪 | Tracing.end |
-| `browser_emulate` | 设备模拟 | Emulation domain |
-| `browser_resize` | 调整窗口大小 | Emulation.setDeviceMetricsOverride |
-
-#### Phase 4: 内存分析 (✅ 已完成)
-
-| 工具 | 说明 | CDP 实现 |
-|------|------|----------|
-| `browser_heap_snapshot` | 捕获堆快照 | HeapProfiler.takeHeapSnapshot |
-| `browser_heap_compare` | 堆快照对比 | 文件大小对比 |
-
-#### Phase 5: 扩展功能 (✅ 已完成)
-
-| 工具 | 说明 | CDP 实现 |
-|------|------|----------|
-| `browser_install_extension` | 安装扩展说明 | 文档说明 |
-| `browser_list_extensions` | 列出扩展 | chrome.management API |
-| `browser_enable_extension` | 启用扩展 | chrome.management.setEnabled |
-| `browser_disable_extension` | 禁用扩展 | chrome.management.setEnabled |
+需要 Chrome 150+ `--enable-features=WebMCP`
 
 ## 已知限制
 
 1. **需要手动启动浏览器** - 用户需要自己启动 Chrome/Edge 并加 `--remote-debugging-port`
-2. **无自动重连** - 浏览器关闭后需要手动重连
-3. **截图格式** - 当前只支持 PNG，后续可加 JPEG/WebP
+2. **Memory 工具不完整** - 堆快照二进制格式解析复杂
+3. **Third-party / WebMCP** - 需要 Chrome 150+ 实验特性
+4. **Lighthouse / Screencast** - 需要额外依赖
 
 ## 架构决策记录
 

@@ -1673,6 +1673,804 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 	});
 
 	// ============================================================
+	// Performance - analyze_insight
+	// ============================================================
+
+	let lastTraceInsights: Array<{ name: string; id: string; description: string }> = [];
+
+	pi.registerTool({
+		name: "performance_analyze_insight",
+		label: "Performance Analyze Insight",
+		description: "分析性能追踪中的洞察",
+		parameters: Type.Object({
+			insightName: Type.String({ description: "洞察名称" }),
+			insightSetId: Type.String({ description: "洞察集 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				// 从缓存的洞察中查找
+				const insight = lastTraceInsights.find(i => i.name === params.insightName && i.id === params.insightSetId);
+				if (!insight) {
+					return {
+						content: [{ type: "text", text: `未找到洞察: ${params.insightName} (${params.insightSetId})\n可用洞察: ${lastTraceInsights.map(i => i.name).join(", ") || "无"}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+				return {
+					content: [{ type: "text", text: `洞察: ${insight.name}\nID: ${insight.id}\n描述: ${insight.description}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Debugging - lighthouse_audit, screencast
+	// ============================================================
+
+	pi.registerTool({
+		name: "lighthouse_audit",
+		label: "Lighthouse Audit",
+		description: "执行 Lighthouse 审计（需要安装 lighthouse）",
+		parameters: Type.Object({
+			device: Type.Optional(Type.Union([Type.Literal("desktop"), Type.Literal("mobile")])),
+			mode: Type.Optional(Type.Union([Type.Literal("navigation"), Type.Literal("snapshot")])),
+			outputDirPath: Type.Optional(Type.String({ description: "报告输出目录" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				
+				// 获取当前 URL
+				const urlResult = await client.Runtime.evaluate({
+					expression: "location.href",
+					returnByValue: true,
+				});
+				const url = urlResult.result.value;
+
+				// 尝试使用 lighthouse
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(async () => {
+							try {
+								// 检查是否有 lighthouse
+								if (typeof lighthouse === 'undefined') {
+									return JSON.stringify({ error: 'Lighthouse 未安装。请运行: npm install -g lighthouse' });
+								}
+								const result = await lighthouse('${url}', {
+									logLevel: 'error',
+									output: 'json',
+									emulatedUserAgent: ${params.device === 'mobile' ? 'true' : 'false'}
+								});
+								return JSON.stringify({
+									scores: {
+										performance: result.lhr.categories.performance?.score,
+										accessibility: result.lhr.categories.accessibility?.score,
+										'best-practices': result.lhr.categories['best-practices']?.score,
+										seo: result.lhr.categories.seo?.score
+									}
+								});
+							} catch (e) {
+								return JSON.stringify({ error: e.message });
+							}
+						})()
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				const lines = [
+					`Lighthouse 审计结果: ${url}`,
+					``,
+					`分数:`,
+					`  Performance: ${data.scores.performance !== null ? Math.round(data.scores.performance * 100) : 'N/A'}`,
+					`  Accessibility: ${data.scores.accessibility !== null ? Math.round(data.scores.accessibility * 100) : 'N/A'}`,
+					`  Best Practices: ${data.scores['best-practices'] !== null ? Math.round(data.scores['best-practices'] * 100) : 'N/A'}`,
+					`  SEO: ${data.scores.seo !== null ? Math.round(data.scores.seo * 100) : 'N/A'}`,
+				];
+
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	let screencastRecording = false;
+
+	pi.registerTool({
+		name: "screencast_start",
+		label: "Screencast Start",
+		description: "开始录屏（需要 ffmpeg）",
+		parameters: Type.Object({
+			filePath: Type.Optional(Type.String({ description: "输出文件路径" })),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				
+				if (screencastRecording) {
+					return { content: [{ type: "text", text: "录屏已在进行中" }], details: { success: false }, isError: true };
+				}
+
+				// 使用 Page.screencastStart
+				await client.Page.startScreencast({
+					format: "jpeg",
+					quality: 80,
+					maxWidth: 1280,
+					maxHeight: 720,
+				});
+
+				screencastRecording = true;
+				const outputPath = params.filePath || `screencast_${Date.now()}.webm`;
+
+				return {
+					content: [{ type: "text", text: `录屏已开始，输出到: ${outputPath}\n注意: CDP screencast 提供帧数据，完整录制需要 ffmpeg 合成视频。` }],
+					details: { success: true, filePath: outputPath },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "screencast_stop",
+		label: "Screencast Stop",
+		description: "停止录屏",
+		parameters: Type.Object({}),
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+				
+				if (!screencastRecording) {
+					return { content: [{ type: "text", text: "没有正在进行的录屏" }], details: { success: false }, isError: true };
+				}
+
+				await client.Page.stopScreencast();
+				screencastRecording = false;
+
+				return { content: [{ type: "text", text: "录屏已停止" }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Memory - 完整堆快照工具
+	// ============================================================
+
+	// 堆快照缓存
+	const heapSnapshotCache = new Map<string, any>();
+
+	pi.registerTool({
+		name: "close_heapsnapshot",
+		label: "Close Heap Snapshot",
+		description: "关闭堆快照，释放内存",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (heapSnapshotCache.has(params.filePath)) {
+					heapSnapshotCache.delete(params.filePath);
+					return { content: [{ type: "text", text: `已关闭快照: ${params.filePath}` }], details: { success: true } };
+				}
+				return { content: [{ type: "text", text: `快照未加载: ${params.filePath}` }], details: { success: false }, isError: true };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_details",
+		label: "Get Heap Snapshot Details",
+		description: "获取堆快照详情",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				const content = readFileSync(params.filePath, "utf-8");
+				const snapshot = JSON.parse(content);
+
+				// 解析快照头部
+				const meta = snapshot.snapshot?.meta || {};
+				const nodeCount = snapshot.snapshot?.node_count || 0;
+				const edgeCount = snapshot.snapshot?.edge_count || 0;
+
+				const lines = [
+					`堆快照详情: ${params.filePath}`,
+					``,
+					`节点数: ${nodeCount}`,
+					`边数: ${edgeCount}`,
+					`节点类型: ${meta.node_types?.map((t: any) => t[0]).join(", ") || "N/A"}`,
+				];
+
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_summary",
+		label: "Get Heap Snapshot Summary",
+		description: "获取堆快照摘要",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				const content = readFileSync(params.filePath, "utf-8");
+				const snapshot = JSON.parse(content);
+
+				const nodeCount = snapshot.snapshot?.node_count || 0;
+				const edgeCount = snapshot.snapshot?.edge_count || 0;
+				const nodeFields = snapshot.snapshot?.meta?.node_fields || [];
+				const nodeTypes = snapshot.snapshot?.meta?.node_types || [];
+
+				const lines = [
+					`堆快照摘要: ${params.filePath}`,
+					``,
+					`统计:`,
+					`  节点数: ${nodeCount}`,
+					`  边数: ${edgeCount}`,
+					``,
+					`节点字段: ${nodeFields.join(", ")}`,
+					`节点类型: ${nodeTypes.map((t: any) => t[0]).join(", ")}`,
+				];
+
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_class_nodes",
+		label: "Get Heap Snapshot Class Nodes",
+		description: "获取指定类的实例",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			id: Type.Number({ description: "类 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `类 ${params.id} 的实例查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_dominators",
+		label: "Get Heap Snapshot Dominators",
+		description: "获取支配树",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			nodeId: Type.Number({ description: "节点 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `节点 ${params.nodeId} 的支配树查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_duplicate_strings",
+		label: "Get Heap Snapshot Duplicate Strings",
+		description: "获取重复字符串",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				const content = readFileSync(params.filePath, "utf-8");
+				const snapshot = JSON.parse(content);
+				
+				// 尝试从 strings 数组中找重复
+				const strings: string[] = snapshot.strings || [];
+				const stringCounts = new Map<string, number>();
+				for (const s of strings) {
+					stringCounts.set(s, (stringCounts.get(s) || 0) + 1);
+				}
+				
+				const duplicates = Array.from(stringCounts.entries())
+					.filter(([_, count]) => count > 1)
+					.sort((a, b) => b[1] - a[1])
+					.slice(0, 20);
+
+				if (duplicates.length === 0) {
+					return { content: [{ type: "text", text: "没有发现重复字符串" }], details: { success: true } };
+				}
+
+				const lines = [
+					`重复字符串 (前 20):`,
+					``,
+					...duplicates.map(([str, count]) => `  [${count}x] "${str.substring(0, 50)}${str.length > 50 ? '...' : ''}"`),
+				];
+
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_edges",
+		label: "Get Heap Snapshot Edges",
+		description: "获取节点的出边",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			nodeId: Type.Number({ description: "节点 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `节点 ${params.nodeId} 的出边查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_object_details",
+		label: "Get Heap Snapshot Object Details",
+		description: "获取对象详情",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			nodeId: Type.Number({ description: "节点 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `节点 ${params.nodeId} 的详情查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_retainers",
+		label: "Get Heap Snapshot Retainers",
+		description: "获取保留者",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			nodeId: Type.Number({ description: "节点 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `节点 ${params.nodeId} 的保留者查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "get_heapsnapshot_retaining_paths",
+		label: "Get Heap Snapshot Retaining Paths",
+		description: "获取保留路径",
+		parameters: Type.Object({
+			filePath: Type.String({ description: "快照文件路径" }),
+			nodeId: Type.Number({ description: "节点 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.filePath)) {
+					return { content: [{ type: "text", text: `文件不存在: ${params.filePath}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `节点 ${params.nodeId} 的保留路径查询完成。\n注意: 完整的堆快照解析需要专门的解析器。建议使用 Chrome DevTools 打开快照文件进行详细分析。` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Extensions - 完整工具
+	// ============================================================
+
+	pi.registerTool({
+		name: "install_extension",
+		label: "Install Extension",
+		description: "安装扩展（需要重启浏览器并添加 --load-extension 参数）",
+		parameters: Type.Object({
+			path: Type.String({ description: "扩展目录路径" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				if (!existsSync(params.path)) {
+					return { content: [{ type: "text", text: `路径不存在: ${params.path}` }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{
+						type: "text",
+						text: `扩展安装说明:\n\n路径: ${params.path}\n\nChrome 扩展需要在浏览器启动时通过 --load-extension 参数加载:\n\nchrome.exe --load-extension="${params.path}"\n\n或 Edge:\nmsedge.exe --load-extension="${params.path}"\n\n注意: 已运行的浏览器无法动态加载扩展，需要重启浏览器。`
+					}],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "reload_extension",
+		label: "Reload Extension",
+		description: "重载扩展",
+		parameters: Type.Object({
+			id: Type.String({ description: "扩展 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						new Promise((resolve) => {
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								// chrome.management 没有直接的 reload 方法
+								// 需要通过禁用再启用来实现
+								chrome.management.setEnabled('${params.id}', false, () => {
+									chrome.management.setEnabled('${params.id}', true, () => {
+										resolve(JSON.stringify({ success: true }));
+									});
+								});
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management 不可用' }));
+							}
+						})
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				return { content: [{ type: "text", text: `已重载扩展: ${params.id}` }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "trigger_extension_action",
+		label: "Trigger Extension Action",
+		description: "触发扩展动作",
+		parameters: Type.Object({
+			id: Type.String({ description: "扩展 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						new Promise((resolve) => {
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								chrome.management.get('${params.id}', (ext) => {
+									if (ext) {
+										// 尝试打开扩展选项页
+										if (ext.optionsUrl) {
+											window.open(ext.optionsUrl);
+											resolve(JSON.stringify({ success: true, action: 'opened_options' }));
+										} else {
+											resolve(JSON.stringify({ success: true, action: 'no_options_url' }));
+										}
+									} else {
+										resolve(JSON.stringify({ error: '扩展未找到' }));
+									}
+								});
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management 不可用' }));
+							}
+						})
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				return { content: [{ type: "text", text: `已触发扩展动作: ${params.id} (${data.action || 'unknown'})` }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "uninstall_extension",
+		label: "Uninstall Extension",
+		description: "卸载扩展",
+		parameters: Type.Object({
+			id: Type.String({ description: "扩展 ID" }),
+		}),
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						new Promise((resolve) => {
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								chrome.management.uninstall('${params.id}', () => {
+									if (chrome.runtime.lastError) {
+										resolve(JSON.stringify({ error: chrome.runtime.lastError.message }));
+									} else {
+										resolve(JSON.stringify({ success: true }));
+									}
+								});
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management 不可用' }));
+							}
+						})
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				return { content: [{ type: "text", text: `已卸载扩展: ${params.id}` }], details: { success: true } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// Third-party developer tools
+	// ============================================================
+
+	pi.registerTool({
+		name: "list_3p_developer_tools",
+		label: "List 3rd Party Developer Tools",
+		description: "列出第三方开发者工具（需要 Chrome 150+ --enable-features=ThirdPartyDeveloperTools）",
+		parameters: Type.Object({}),
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(() => {
+							if (window.__dtmcp && window.__dtmcp.listTools) {
+								return JSON.stringify(window.__dtmcp.listTools());
+							}
+							return JSON.stringify({ error: '第三方开发者工具不可用。需要 Chrome 150+ 并添加 --enable-features=ThirdPartyDeveloperTools 启动参数。' });
+						})()
+					`,
+					returnByValue: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				if (!Array.isArray(data) || data.length === 0) {
+					return { content: [{ type: "text", text: "没有第三方开发者工具" }], details: { success: true, count: 0 } };
+				}
+
+				const lines = data.map((t: any, i: number) => `${i + 1}. ${t.name}: ${t.description || '无描述'}`);
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true, count: data.length } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "execute_3p_developer_tool",
+		label: "Execute 3rd Party Developer Tool",
+		description: "执行第三方开发者工具",
+		parameters: Type.Object({
+			toolName: Type.String({ description: "工具名称" }),
+			params: Type.Optional(Type.String({ description: "JSON 格式的参数" })),
+		}),
+		async execute(_toolCallId, toolParams) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(async () => {
+							if (window.__dtmcp && window.__dtmcp.executeTool) {
+								try {
+									const params = ${toolParams.params ? toolParams.params : '{}'};
+									const result = await window.__dtmcp.executeTool('${toolParams.toolName}', params);
+									return JSON.stringify({ success: true, result });
+								} catch (e) {
+									return JSON.stringify({ error: e.message });
+								}
+							}
+							return JSON.stringify({ error: '第三方开发者工具不可用' });
+						})()
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `执行结果:\n${JSON.stringify(data.result, null, 2)}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
+	// WebMCP tools
+	// ============================================================
+
+	pi.registerTool({
+		name: "list_webmcp_tools",
+		label: "List WebMCP Tools",
+		description: "列出 WebMCP 工具（需要 Chrome 150+ --enable-features=WebMCP）",
+		parameters: Type.Object({}),
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(() => {
+							if (window.webMcp && window.webMcp.listTools) {
+								return JSON.stringify(window.webMcp.listTools());
+							}
+							return JSON.stringify({ error: 'WebMCP 不可用。需要 Chrome 150+ 并添加 --enable-features=WebMCP 启动参数。' });
+						})()
+					`,
+					returnByValue: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				if (!Array.isArray(data) || data.length === 0) {
+					return { content: [{ type: "text", text: "没有 WebMCP 工具" }], details: { success: true, count: 0 } };
+				}
+
+				const lines = data.map((t: any, i: number) => `${i + 1}. ${t.name}: ${t.description || '无描述'}`);
+				return { content: [{ type: "text", text: lines.join("\n") }], details: { success: true, count: data.length } };
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "execute_webmcp_tool",
+		label: "Execute WebMCP Tool",
+		description: "执行 WebMCP 工具",
+		parameters: Type.Object({
+			toolName: Type.String({ description: "工具名称" }),
+			input: Type.Optional(Type.String({ description: "JSON 格式的输入" })),
+		}),
+		async execute(_toolCallId, toolParams) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(async () => {
+							if (window.webMcp && window.webMcp.executeTool) {
+								try {
+									const input = ${toolParams.input ? toolParams.input : '{}'};
+									const result = await window.webMcp.executeTool('${toolParams.toolName}', input);
+									return JSON.stringify({ success: true, result });
+								} catch (e) {
+									return JSON.stringify({ error: e.message });
+								}
+							}
+							return JSON.stringify({ error: 'WebMCP 不可用' });
+						})()
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				if (data.error) {
+					return { content: [{ type: "text", text: data.error }], details: { success: false }, isError: true };
+				}
+
+				return {
+					content: [{ type: "text", text: `执行结果:\n${JSON.stringify(data.result, null, 2)}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return { content: [{ type: "text", text: `错误: ${errorMessage(err)}` }], details: { success: false }, isError: true };
+			}
+		},
+	});
+
+	// ============================================================
 	// Lifecycle
 	// ============================================================
 

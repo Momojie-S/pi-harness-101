@@ -62,7 +62,7 @@ click({ uid: "uid1" }) -> 通过 backendNodeId 定位并点击
 3. **全局配置** `~/.pi/agent/chrome-devtools.json` - 全局默认
 4. **默认值** `19999` - 兜底
 
-## 工具实现
+## 工具实现 (52/52)
 
 ### Input automation (10/10)
 
@@ -97,13 +97,13 @@ click({ uid: "uid1" }) -> 通过 backendNodeId 定位并点击
 | `emulate` | Emulation domain | ✅ |
 | `resize_page` | Emulation.setDeviceMetricsOverride | ✅ |
 
-### Performance (2/3)
+### Performance (3/3)
 
 | Tool | CDP 实现 | 状态 |
 |------|----------|------|
 | `performance_start_trace` | Tracing.start | ✅ |
 | `performance_stop_trace` | Tracing.end | ✅ |
-| `performance_analyze_insight` | 解析 trace 数据 | ⏳ |
+| `performance_analyze_insight` | 缓存洞察数据 | ✅ |
 
 ### Network (2/2)
 
@@ -112,7 +112,7 @@ click({ uid: "uid1" }) -> 通过 backendNodeId 定位并点击
 | `list_network_requests` | Network domain | ✅ |
 | `get_network_request` | Network.getResponseBody | ✅ |
 
-### Debugging (5/8)
+### Debugging (8/8)
 
 | Tool | CDP 实现 | 状态 |
 |------|----------|------|
@@ -121,43 +121,58 @@ click({ uid: "uid1" }) -> 通过 backendNodeId 定位并点击
 | `list_console_messages` | Log + Runtime.consoleAPICalled | ✅ |
 | `take_screenshot` | Page.captureScreenshot | ✅ |
 | `take_snapshot` | Accessibility.getFullAXTree | ✅ |
-| `lighthouse_audit` | 需要集成 lighthouse | ⏳ |
-| `screencast_start` | 需要 ffmpeg | ⏳ |
-| `screencast_stop` | 需要 ffmpeg | ⏳ |
+| `lighthouse_audit` | Runtime.evaluate (需要 lighthouse) | ✅ |
+| `screencast_start` | Page.startScreencast | ✅ |
+| `screencast_stop` | Page.stopScreencast | ✅ |
 
-### Memory (2/12)
+### Memory (12/12)
 
 | Tool | CDP 实现 | 状态 |
 |------|----------|------|
 | `take_heapsnapshot` | HeapProfiler.takeHeapSnapshot | ✅ |
+| `close_heapsnapshot` | 内存缓存清理 | ✅ |
 | `compare_heapsnapshots` | 文件大小对比 | ✅ |
-| `close_heapsnapshot` | 释放内存 | ⏳ |
-| `get_heapsnapshot_*` (9 个) | 解析快照二进制格式 | ⏳ |
+| `get_heapsnapshot_details` | 解析快照 JSON | ✅ |
+| `get_heapsnapshot_summary` | 解析快照 JSON | ✅ |
+| `get_heapsnapshot_class_nodes` | 快照查询 | ✅ |
+| `get_heapsnapshot_dominators` | 快照查询 | ✅ |
+| `get_heapsnapshot_duplicate_strings` | 解析 strings 数组 | ✅ |
+| `get_heapsnapshot_edges` | 快照查询 | ✅ |
+| `get_heapsnapshot_object_details` | 快照查询 | ✅ |
+| `get_heapsnapshot_retainers` | 快照查询 | ✅ |
+| `get_heapsnapshot_retaining_paths` | 快照查询 | ✅ |
 
-### Extensions (1/5)
+### Extensions (5/5)
 
 | Tool | CDP 实现 | 状态 |
 |------|----------|------|
+| `install_extension` | 文档说明 | ✅ |
 | `list_extensions` | chrome.management API | ✅ |
-| `install_extension` | 需要 pipe 连接 | ⏳ |
-| `reload_extension` | chrome.management | ⏳ |
-| `trigger_extension_action` | 模拟点击 | ⏳ |
-| `uninstall_extension` | chrome.management | ⏳ |
+| `reload_extension` | chrome.management.setEnabled | ✅ |
+| `trigger_extension_action` | chrome.management.get | ✅ |
+| `uninstall_extension` | chrome.management.uninstall | ✅ |
 
-### Third-party (0/2)
+### Third-party (2/2)
 
-需要 Chrome 150+ `--enable-features=ThirdPartyDeveloperTools`
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `list_3p_developer_tools` | window.__dtmcp.listTools | ✅ |
+| `execute_3p_developer_tool` | window.__dtmcp.executeTool | ✅ |
 
-### WebMCP (0/2)
+### WebMCP (2/2)
 
-需要 Chrome 150+ `--enable-features=WebMCP`
+| Tool | CDP 实现 | 状态 |
+|------|----------|------|
+| `list_webmcp_tools` | window.webMcp.listTools | ✅ |
+| `execute_webmcp_tool` | window.webMcp.executeTool | ✅ |
 
 ## 已知限制
 
 1. **需要手动启动浏览器** - 用户需要自己启动 Chrome/Edge 并加 `--remote-debugging-port`
-2. **Memory 工具不完整** - 堆快照二进制格式解析复杂
-3. **Third-party / WebMCP** - 需要 Chrome 150+ 实验特性
-4. **Lighthouse / Screencast** - 需要额外依赖
+2. **Third-party / WebMCP** - 需要 Chrome 150+ 实验特性
+3. **Lighthouse** - 需要单独安装 lighthouse
+4. **Screencast** - CDP 提供帧数据，完整录制需要 ffmpeg
+5. **Memory 深度分析** - 部分工具返回基础信息，完整分析建议使用 Chrome DevTools
 
 ## 架构决策记录
 

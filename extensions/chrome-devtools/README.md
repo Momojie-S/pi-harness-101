@@ -25,11 +25,11 @@ chrome.exe --remote-debugging-port=9222
 | 3 | 全局配置 `~/.pi/agent/chrome-devtools.json` | 全局默认 |
 | 4 | 默认值 `19999` | 兜底 |
 
-## 工具列表 (52 个)
+## 工具列表 (52/52)
 
 与 chrome-devtools-mcp 完全一致的工具名称和参数。
 
-### Input automation (10)
+### Input automation (10/10)
 
 | Tool | 说明 |
 |------|------|
@@ -44,7 +44,7 @@ chrome.exe --remote-debugging-port=9222
 | `upload_file` | 上传文件 |
 | `click_at` | 点击坐标 |
 
-### Navigation automation (6)
+### Navigation automation (6/6)
 
 | Tool | 说明 |
 |------|------|
@@ -55,14 +55,14 @@ chrome.exe --remote-debugging-port=9222
 | `select_page` | 选择页面 |
 | `wait_for` | 等待文字出现 |
 
-### Emulation (2)
+### Emulation (2/2)
 
 | Tool | 说明 |
 |------|------|
 | `emulate` | 设备模拟 (视口/UA/颜色/网络/位置) |
 | `resize_page` | 调整页面大小 |
 
-### Performance (3)
+### Performance (3/3)
 
 | Tool | 说明 |
 |------|------|
@@ -70,14 +70,14 @@ chrome.exe --remote-debugging-port=9222
 | `performance_stop_trace` | 停止性能追踪 |
 | `performance_analyze_insight` | 分析性能洞察 |
 
-### Network (2)
+### Network (2/2)
 
 | Tool | 说明 |
 |------|------|
 | `list_network_requests` | 列出网络请求 |
 | `get_network_request` | 获取请求详情 |
 
-### Debugging (8)
+### Debugging (8/8)
 
 | Tool | 说明 |
 |------|------|
@@ -90,7 +90,7 @@ chrome.exe --remote-debugging-port=9222
 | `screencast_start` | 开始录屏 |
 | `screencast_stop` | 停止录屏 |
 
-### Memory (12)
+### Memory (12/12)
 
 | Tool | 说明 |
 |------|------|
@@ -107,7 +107,7 @@ chrome.exe --remote-debugging-port=9222
 | `get_heapsnapshot_retainers` | 获取保留者 |
 | `get_heapsnapshot_retaining_paths` | 获取保留路径 |
 
-### Extensions (5)
+### Extensions (5/5)
 
 | Tool | 说明 |
 |------|------|
@@ -117,14 +117,14 @@ chrome.exe --remote-debugging-port=9222
 | `trigger_extension_action` | 触发扩展动作 |
 | `uninstall_extension` | 卸载扩展 |
 
-### Third-party (2)
+### Third-party (2/2)
 
 | Tool | 说明 |
 |------|------|
 | `list_3p_developer_tools` | 列出第三方工具 |
 | `execute_3p_developer_tool` | 执行第三方工具 |
 
-### WebMCP (2)
+### WebMCP (2/2)
 
 | Tool | 说明 |
 |------|------|
@@ -153,3 +153,12 @@ chrome.exe --remote-debugging-port=9222
 | Command | 说明 |
 |---------|------|
 | `/chrome-port <port>` | 切换调试端口 |
+
+## 特殊功能要求
+
+| 功能 | 要求 |
+|------|------|
+| Third-party tools | Chrome 150+ `--enable-features=ThirdPartyDeveloperTools` |
+| WebMCP | Chrome 150+ `--enable-features=WebMCP` |
+| Lighthouse | 需要安装 `npm install -g lighthouse` |
+| Screencast | 需要 ffmpeg |

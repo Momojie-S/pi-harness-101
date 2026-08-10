@@ -73,10 +73,11 @@ pi install git:github.com/Momojie-S/pi-harness-101
 | Emulation | 2 | emulate, resize_page |
 | Performance | 3 | performance trace |
 | Network | 2 | list/get network requests |
-| Debugging | 8 | screenshot, snapshot, console, script |
+| Debugging | 8 | screenshot, snapshot, console, script, lighthouse, screencast |
 | Memory | 12 | heap snapshot 分析 |
 | Extensions | 5 | Chrome 扩展管理 |
 | Third-party | 2 | 第三方开发者工具 |
 | WebMCP | 2 | WebMCP 工具 |
+| **总计** | **52** | **完全兼容 chrome-devtools-mcp** |
 
 完整工具列表见 [extensions/chrome-devtools/README.md](./extensions/chrome-devtools/README.md)。

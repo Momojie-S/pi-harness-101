@@ -57,6 +57,15 @@ chrome.exe --remote-debugging-port=9222
 | `browser_close_page` | 关闭标签页 |
 | `browser_drag` | 拖拽元素 |
 
+### Phase 2: 调试能力
+
+| Tool | 功能 |
+|------|------|
+| `browser_list_console` | 列出控制台消息（支持按类型过滤） |
+| `browser_get_console` | 获取单条消息详情 |
+| `browser_list_network` | 列出网络请求（支持按资源类型过滤） |
+| `browser_get_network` | 获取请求详情（请求头、响应头、请求体、响应体） |
+
 ## 提供的 Commands
 
 | Command | 功能 |

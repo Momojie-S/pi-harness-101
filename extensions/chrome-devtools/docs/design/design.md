@@ -62,13 +62,13 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | Navigation | 6 | 6 | 0 |
 | Emulation | 2 | 0 | 2 |
 | Performance | 3 | 0 | 3 |
-| Network | 2 | 0 | 2 |
-| Debugging | 8 | 3 | 5 |
+| Network | 2 | 2 | 0 |
+| Debugging | 8 | 5 | 3 |
 | Memory | 12 | 0 | 12 |
 | Extensions | 5 | 0 | 5 |
 | Third-party | 2 | 0 | 2 |
 | WebMCP | 2 | 0 | 2 |
-| **总计** | **52** | **16** | **36** |
+| **总计** | **52** | **20** | **32** |
 
 ### 已实现的工具
 
@@ -91,6 +91,10 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | `browser_new_page` | `new_page` | Target.createTarget |
 | `browser_close_page` | `close_page` | Target.closeTarget |
 | `browser_drag` | `drag` | Input.dispatchMouseEvent 序列 |
+| `browser_list_console` | `list_console_messages` | Log + Runtime.consoleAPICalled |
+| `browser_get_console` | `get_console_message` | 内存缓存 |
+| `browser_list_network` | `list_network_requests` | Network domain |
+| `browser_get_network` | `get_network_request` | Network.getResponseBody |
 
 ### 分阶段实现计划
 
@@ -106,15 +110,14 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | `browser_close_page` | 关闭标签页 | Target.closeTarget |
 | `browser_drag` | 拖拽 | Input.dispatchMouseEvent 序列 |
 
-#### Phase 2: 调试能力
+#### Phase 2: 调试能力（✅ 已完成）
 
 | 工具 | 说明 | CDP 实现 |
 |------|------|----------|
-| `browser_take_snapshot` | a11y tree 快照 | Accessibility.getFullAXTree |
-| `browser_list_console` | 控制台消息列表 | Log/Console domain |
+| `browser_list_console` | 控制台消息列表 | Log + Runtime.consoleAPICalled |
 | `browser_get_console` | 获取单条消息 | 内存缓存 |
 | `browser_list_network` | 网络请求列表 | Network domain |
-| `browser_get_network` | 获取请求详情 | Network domain |
+| `browser_get_network` | 获取请求详情 | Network.getResponseBody |
 
 #### Phase 3: 高级功能
 

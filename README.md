@@ -64,7 +64,7 @@ pi install git:github.com/Momojie-S/pi-harness-101
 
 **前提**：启动浏览器时加 `--remote-debugging-port=19999`
 
-**Phase 1 工具** (核心自动化)：
+**Phase 1 工具** (核心自动化 - 17 个)：
 
 | Tool | 功能 |
 |------|------|
@@ -74,7 +74,7 @@ pi install git:github.com/Momojie-S/pi-harness-101
 | `browser_evaluate` | 执行 JS |
 | `browser_click` | 点击元素 |
 | `browser_type` | 输入文字 |
-| `browser_fill` | 表单填写 (input/select/checkbox/radio) |
+| `browser_fill` | 表单填写 |
 | `browser_hover` | 悬停元素 |
 | `browser_press_key` | 按键/组合键 |
 | `browser_handle_dialog` | 处理弹窗 |
@@ -86,7 +86,15 @@ pi install git:github.com/Momojie-S/pi-harness-101
 | `browser_close_page` | 关闭标签页 |
 | `browser_drag` | 拖拽元素 |
 
+**Phase 2 工具** (调试能力 - 4 个)：
+
+| Tool | 功能 |
+|------|------|
+| `browser_list_console` | 列出控制台消息 |
+| `browser_get_console` | 获取单条消息详情 |
+| `browser_list_network` | 列出网络请求 |
+| `browser_get_network` | 获取请求详情 |
+
 **后续计划**：
-- Phase 2: 调试能力 (console, network)
 - Phase 3: 高级功能 (performance, emulation)
 - Phase 4: 内存分析 (heap snapshot)

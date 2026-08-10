@@ -22,6 +22,12 @@
  * - browser_new_page: 新建标签页
  * - browser_close_page: 关闭标签页
  * - browser_drag: 拖拽元素
+ *
+ * Phase 2 工具 (调试能力):
+ * - browser_list_console: 列出控制台消息
+ * - browser_get_console: 获取单条消息详情
+ * - browser_list_network: 列出网络请求
+ * - browser_get_network: 获取请求详情
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -40,6 +46,31 @@ type CDPClient = Awaited<ReturnType<typeof CDP>>;
 interface ConnectionState {
 	client: CDPClient;
 	target: string;
+	consoleMessages: ConsoleMessage[];
+	networkRequests: Map<string, NetworkRequest>;
+}
+
+interface ConsoleMessage {
+	id: number;
+	level: string;
+	text: string;
+	timestamp: number;
+	url?: string;
+	lineNumber?: number;
+}
+
+interface NetworkRequest {
+	id: string;
+	url: string;
+	method: string;
+	type: string;
+	status?: number;
+	statusText?: string;
+	requestHeaders?: Record<string, string>;
+	responseHeaders?: Record<string, string>;
+	requestBody?: string;
+	responseBody?: string;
+	timestamp: number;
 }
 
 /** 配置文件结构 */
@@ -118,11 +149,87 @@ async function ensureConnected(port: number): Promise<CDPClient> {
 	}
 
 	const client = await CDP({ port });
-	connection = { client, target: `localhost:${port}` };
+	connection = { 
+		client, 
+		target: `localhost:${port}`,
+		consoleMessages: [],
+		networkRequests: new Map()
+	};
 
 	// 监听断开连接
 	client.on("disconnect", () => {
 		connection = null;
+	});
+
+	// 启用 Log domain 收集控制台消息
+	await client.Log.enable();
+	let consoleIdCounter = 1;
+	client.Log.entryAdded((event) => {
+		const entry = event.entry;
+		connection?.consoleMessages.push({
+			id: consoleIdCounter++,
+			level: entry.level,
+			text: entry.text,
+			timestamp: entry.timestamp,
+			url: entry.url,
+			lineNumber: entry.lineNumber,
+		});
+		// 保留最近 1000 条
+		if (connection && connection.consoleMessages.length > 1000) {
+			connection.consoleMessages.shift();
+		}
+	});
+
+	// 启用 Runtime domain 收集 console API 调用
+	await client.Runtime.enable();
+	client.Runtime.consoleAPICalled((event) => {
+		const text = event.args.map(arg => {
+			if (arg.value !== undefined) return String(arg.value);
+			if (arg.description) return arg.description;
+			return JSON.stringify(arg);
+		}).join(' ');
+		
+		connection?.consoleMessages.push({
+			id: consoleIdCounter++,
+			level: event.type,
+			text,
+			timestamp: event.timestamp,
+		});
+		if (connection && connection.consoleMessages.length > 1000) {
+			connection.consoleMessages.shift();
+		}
+	});
+
+	// 启用 Network domain 收集网络请求
+	await client.Network.enable();
+	client.Network.requestWillBeSent((event) => {
+		connection?.networkRequests.set(event.requestId, {
+			id: event.requestId,
+			url: event.request.url,
+			method: event.request.method,
+			type: event.type,
+			requestHeaders: event.request.headers,
+			requestBody: event.request.postData,
+			timestamp: event.timestamp,
+		});
+	});
+
+	client.Network.responseReceived((event) => {
+		const req = connection?.networkRequests.get(event.requestId);
+		if (req) {
+			req.status = event.response.status;
+			req.statusText = event.response.statusText;
+			req.responseHeaders = event.response.headers;
+		}
+	});
+
+	// 清理已完成的请求（保留最近 500 个）
+	client.Network.loadingFinished(() => {
+		if (connection && connection.networkRequests.size > 500) {
+			const keys = Array.from(connection.networkRequests.keys());
+			const toRemove = keys.slice(0, keys.length - 500);
+			toRemove.forEach(key => connection!.networkRequests.delete(key));
+		}
 	});
 
 	return client;
@@ -232,6 +339,38 @@ const CLOSE_PAGE_PARAMS = Type.Object({
 const DRAG_PARAMS = Type.Object({
 	fromSelector: Type.String({ description: "拖拽起始元素的 CSS 选择器" }),
 	toSelector: Type.String({ description: "拖拽目标元素的 CSS 选择器" }),
+});
+
+// Phase 2 工具参数 (调试能力)
+
+const LIST_CONSOLE_PARAMS = Type.Object({
+	types: Type.Optional(
+		Type.Array(Type.String(), {
+			description: "过滤消息类型: log, info, warning, error, debug",
+		}),
+	),
+	limit: Type.Optional(
+		Type.Number({ description: "返回的最大消息数，默认 100" }),
+	),
+});
+
+const GET_CONSOLE_PARAMS = Type.Object({
+	id: Type.Number({ description: "控制台消息的 ID" }),
+});
+
+const LIST_NETWORK_PARAMS = Type.Object({
+	resourceTypes: Type.Optional(
+		Type.Array(Type.String(), {
+			description: "过滤资源类型: Document, Script, Stylesheet, Image, XHR, Fetch, WebSocket, Other",
+		}),
+	),
+	limit: Type.Optional(
+		Type.Number({ description: "返回的最大请求数，默认 100" }),
+	),
+});
+
+const GET_NETWORK_PARAMS = Type.Object({
+	id: Type.String({ description: "网络请求的 ID" }),
 });
 
 // ============================================================
@@ -1266,6 +1405,251 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 							text: `已将元素从 (${Math.round(positions.from.x)}, ${Math.round(positions.from.y)}) 拖拽到 (${Math.round(positions.to.x)}, ${Math.round(positions.to.y)})`,
 						},
 					],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ============================================================
+	// Phase 2 工具 (调试能力)
+	// ============================================================
+
+	// ---------- browser_list_console ----------
+	pi.registerTool({
+		name: "browser_list_console",
+		label: "List Console",
+		description: "列出浏览器控制台消息。支持按类型过滤。",
+		parameters: LIST_CONSOLE_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				await ensureConnected(configuredPort);
+				
+				if (!connection || connection.consoleMessages.length === 0) {
+					return {
+						content: [{ type: "text", text: "没有控制台消息" }],
+						details: { success: true, count: 0 },
+					};
+				}
+
+				let messages = connection.consoleMessages;
+				
+				// 按类型过滤
+				if (params.types && params.types.length > 0) {
+					messages = messages.filter(m => params.types!.includes(m.level));
+				}
+
+				// 限制数量
+				const limit = params.limit || 100;
+				messages = messages.slice(-limit);
+
+				if (messages.length === 0) {
+					return {
+						content: [{ type: "text", text: "没有匹配的控制台消息" }],
+						details: { success: true, count: 0 },
+					};
+				}
+
+				const lines = messages.map(m => {
+					const time = new Date(m.timestamp).toISOString().substr(11, 12);
+					const location = m.url ? ` (${m.url}${m.lineNumber ? `:${m.lineNumber}` : ''})` : '';
+					return `[${m.id}] [${time}] [${m.level.toUpperCase()}] ${m.text}${location}`;
+				});
+
+				return {
+					content: [{ type: "text", text: lines.join('\n') }],
+					details: { success: true, count: messages.length },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_get_console ----------
+	pi.registerTool({
+		name: "browser_get_console",
+		label: "Get Console",
+		description: "获取单条控制台消息的详细信息。",
+		parameters: GET_CONSOLE_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				await ensureConnected(configuredPort);
+				
+				if (!connection) {
+					return {
+						content: [{ type: "text", text: "未连接到浏览器" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				const message = connection.consoleMessages.find(m => m.id === params.id);
+				if (!message) {
+					return {
+						content: [{ type: "text", text: `未找到消息 ID: ${params.id}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				const time = new Date(message.timestamp).toISOString();
+				const text = [
+					`ID: ${message.id}`,
+					`级别: ${message.level}`,
+					`时间: ${time}`,
+					`内容: ${message.text}`,
+					message.url ? `URL: ${message.url}` : null,
+					message.lineNumber ? `行号: ${message.lineNumber}` : null,
+				].filter(Boolean).join('\n');
+
+				return {
+					content: [{ type: "text", text }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_list_network ----------
+	pi.registerTool({
+		name: "browser_list_network",
+		label: "List Network",
+		description: "列出浏览器的网络请求。支持按资源类型过滤。",
+		parameters: LIST_NETWORK_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				await ensureConnected(configuredPort);
+				
+				if (!connection || connection.networkRequests.size === 0) {
+					return {
+						content: [{ type: "text", text: "没有网络请求" }],
+						details: { success: true, count: 0 },
+					};
+				}
+
+				let requests = Array.from(connection.networkRequests.values());
+				
+				// 按资源类型过滤
+				if (params.resourceTypes && params.resourceTypes.length > 0) {
+					requests = requests.filter(r => params.resourceTypes!.includes(r.type));
+				}
+
+				// 按时间排序（最新的在前）
+				requests.sort((a, b) => b.timestamp - a.timestamp);
+
+				// 限制数量
+				const limit = params.limit || 100;
+				requests = requests.slice(0, limit);
+
+				if (requests.length === 0) {
+					return {
+						content: [{ type: "text", text: "没有匹配的网络请求" }],
+						details: { success: true, count: 0 },
+					};
+				}
+
+				const lines = requests.map(r => {
+					const status = r.status ? `${r.status} ${r.statusText || ''}` : 'pending';
+					const url = r.url.length > 80 ? r.url.substring(0, 77) + '...' : r.url;
+					return `[${r.id}] ${r.method} ${status} [${r.type}] ${url}`;
+				});
+
+				return {
+					content: [{ type: "text", text: lines.join('\n') }],
+					details: { success: true, count: requests.length },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_get_network ----------
+	pi.registerTool({
+		name: "browser_get_network",
+		label: "Get Network",
+		description: "获取单个网络请求的详细信息，包括请求头、响应头、请求体和响应体。",
+		parameters: GET_NETWORK_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				
+				if (!connection) {
+					return {
+						content: [{ type: "text", text: "未连接到浏览器" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				const request = connection.networkRequests.get(params.id);
+				if (!request) {
+					return {
+						content: [{ type: "text", text: `未找到请求 ID: ${params.id}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				// 尝试获取响应体
+				let responseBody: string | undefined;
+				try {
+					const response = await client.Network.getResponseBody({ requestId: params.id });
+					responseBody = response.body;
+					if (response.base64Encoded) {
+						responseBody = `[Base64 编码，长度: ${responseBody.length}]`;
+					}
+				} catch {
+					responseBody = '[无法获取响应体]';
+				}
+
+				const text = [
+					`=== 请求信息 ===`,
+					`ID: ${request.id}`,
+					`URL: ${request.url}`,
+					`方法: ${request.method}`,
+					`类型: ${request.type}`,
+					`时间: ${new Date(request.timestamp * 1000).toISOString()}`,
+					``,
+					`=== 请求头 ===`,
+					request.requestHeaders ? Object.entries(request.requestHeaders).map(([k, v]) => `${k}: ${v}`).join('\n') : '(无)',
+					``,
+					`=== 请求体 ===`,
+					request.requestBody || '(无)',
+					``,
+					`=== 响应信息 ===`,
+					`状态: ${request.status || 'pending'} ${request.statusText || ''}`,
+					``,
+					`=== 响应头 ===`,
+					request.responseHeaders ? Object.entries(request.responseHeaders).map(([k, v]) => `${k}: ${v}`).join('\n') : '(无)',
+					``,
+					`=== 响应体 ===`,
+					responseBody || '(无)',
+				].join('\n');
+
+				return {
+					content: [{ type: "text", text }],
 					details: { success: true },
 				};
 			} catch (err) {

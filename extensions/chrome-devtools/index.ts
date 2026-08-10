@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, DEFAULT_PORT } from "./src/config.ts";
+import { buildSnapshot } from "./src/snapshot.ts";
 import { Type } from "typebox";
 import CDP from "chrome-remote-interface";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
@@ -152,63 +153,13 @@ async function disconnect(): Promise<void> {
 // UID 系统 - 基于 a11y tree
 // ============================================================
 
-let uidCounter = 1;
-
 async function takeSnapshot(client: CDPClient): Promise<string> {
 	await client.Accessibility.enable();
 	const result = await client.Accessibility.getFullAXTree();
 
-	connection!.uidMap.clear();
-	uidCounter = 1;
-
-	const lines: string[] = [];
-
-	function processNode(node: any, depth: number): void {
-		if (node.ignored) return;
-
-		const role = node.role?.value || "unknown";
-		const name = node.name?.value || "";
-		const value = node.value?.value;
-
-		// 为可交互元素分配 uid
-		const interactiveRoles = [
-			"button", "link", "textbox", "checkbox", "radio",
-			"combobox", "menuitem", "tab", "slider", "switch",
-			"searchbox", "spinbutton", "option", "img"
-		];
-
-		let uid = "";
-		if (interactiveRoles.includes(role) || name) {
-			uid = `uid${uidCounter++}`;
-			const backendNodeId = node.backendDOMNodeId;
-			let selector = "";
-			if (backendNodeId && backendNodeId !== -1) {
-				// 使用 backendNodeId 生成选择器
-				selector = `[data-uid="${uid}"]`;
-				connection!.uidMap.set(uid, { selector: `#${backendNodeId}`, role, name });
-			}
-		}
-
-		const indent = "  ".repeat(depth);
-		const valueStr = value ? ` value="${value}"` : "";
-		const uidStr = uid ? ` [${uid}]` : "";
-		lines.push(`${indent}${role}${name ? ` "${name}"` : ""}${valueStr}${uidStr}`);
-
-		if (node.childIds) {
-			for (const childId of node.childIds) {
-				const childNode = result.nodes.find((n: any) => n.nodeId === childId);
-				if (childNode) {
-					processNode(childNode, depth + 1);
-				}
-			}
-		}
-	}
-
-	// 从根节点开始
-	const rootNode = result.nodes.find((n: any) => n.role?.value === "RootWebArea");
-	if (rootNode) {
-		processNode(rootNode, 0);
-	}
+	// 快照构建（uid 分配 + 文本格式化）抽到 src/snapshot.ts，便于单元测试
+	const { lines, uidMap } = buildSnapshot(result.nodes);
+	connection!.uidMap = uidMap;
 
 	return lines.join("\n");
 }

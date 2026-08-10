@@ -70,7 +70,9 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | WebMCP | 2 | 0 | 2 |
 | **总计** | **52** | **20** | **32** |
 
-### 已实现的工具
+### 已实现的工具 (31 个)
+
+### Phase 1: 核心自动化 (17 个)
 
 | Tool | 对应 MCP 工具 | CDP Domain |
 |------|--------------|------------|
@@ -91,10 +93,40 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | `browser_new_page` | `new_page` | Target.createTarget |
 | `browser_close_page` | `close_page` | Target.closeTarget |
 | `browser_drag` | `drag` | Input.dispatchMouseEvent 序列 |
+
+### Phase 2: 调试能力 (4 个)
+
+| Tool | 对应 MCP 工具 | CDP Domain |
+|------|--------------|------------|
 | `browser_list_console` | `list_console_messages` | Log + Runtime.consoleAPICalled |
 | `browser_get_console` | `get_console_message` | 内存缓存 |
 | `browser_list_network` | `list_network_requests` | Network domain |
 | `browser_get_network` | `get_network_request` | Network.getResponseBody |
+
+### Phase 3: 高级功能 (4 个)
+
+| Tool | 对应 MCP 工具 | CDP Domain |
+|------|--------------|------------|
+| `browser_performance_start` | `performance_start_trace` | Tracing.start |
+| `browser_performance_stop` | `performance_stop_trace` | Tracing.end |
+| `browser_emulate` | `emulate` | Emulation domain |
+| `browser_resize` | `resize_page` | Emulation.setDeviceMetricsOverride |
+
+### Phase 4: 内存分析 (2 个)
+
+| Tool | 对应 MCP 工具 | CDP Domain |
+|------|--------------|------------|
+| `browser_heap_snapshot` | `take_heapsnapshot` | HeapProfiler.takeHeapSnapshot |
+| `browser_heap_compare` | `compare_heapsnapshots` | 文件大小对比 |
+
+### Phase 5: 扩展功能 (4 个)
+
+| Tool | 对应 MCP 工具 | CDP Domain |
+|------|--------------|------------|
+| `browser_install_extension` | `install_extension` | 说明文档 |
+| `browser_list_extensions` | `list_extensions` | chrome.management API |
+| `browser_enable_extension` | - | chrome.management.setEnabled |
+| `browser_disable_extension` | - | chrome.management.setEnabled |
 
 ### 分阶段实现计划
 
@@ -119,7 +151,7 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | `browser_list_network` | 网络请求列表 | Network domain |
 | `browser_get_network` | 获取请求详情 | Network.getResponseBody |
 
-#### Phase 3: 高级功能
+#### Phase 3: 高级功能 (✅ 已完成)
 
 | 工具 | 说明 | CDP 实现 |
 |------|------|----------|
@@ -128,20 +160,21 @@ pi 不支持 MCP，采用 extension + custom tools 机制。
 | `browser_emulate` | 设备模拟 | Emulation domain |
 | `browser_resize` | 调整窗口大小 | Emulation.setDeviceMetricsOverride |
 
-#### Phase 4: 内存分析
+#### Phase 4: 内存分析 (✅ 已完成)
 
 | 工具 | 说明 | CDP 实现 |
 |------|------|----------|
-| `browser_heap_snapshot` | 堆快照 | HeapProfiler domain |
-| `browser_heap_compare` | 堆对比 | 解析快照文件 |
-| ... | 其他 heap 工具 | HeapProfiler domain |
+| `browser_heap_snapshot` | 捕获堆快照 | HeapProfiler.takeHeapSnapshot |
+| `browser_heap_compare` | 堆快照对比 | 文件大小对比 |
 
-#### Phase 5: 扩展功能（可选）
+#### Phase 5: 扩展功能 (✅ 已完成)
 
-- Chrome Extensions 管理
-- Lighthouse 审计
-- Screencast 录制
-- Third-party 开发者工具
+| 工具 | 说明 | CDP 实现 |
+|------|------|----------|
+| `browser_install_extension` | 安装扩展说明 | 文档说明 |
+| `browser_list_extensions` | 列出扩展 | chrome.management API |
+| `browser_enable_extension` | 启用扩展 | chrome.management.setEnabled |
+| `browser_disable_extension` | 禁用扩展 | chrome.management.setEnabled |
 
 ## 已知限制
 

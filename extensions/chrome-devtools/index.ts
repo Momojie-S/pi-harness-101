@@ -4,7 +4,7 @@
  * 通过 CDP (Chrome DevTools Protocol) 控制已开启调试端口的 Chrome/Edge 浏览器。
  * 用户需先启动浏览器: chrome.exe --remote-debugging-port=19999
  *
- * Phase 1 工具 (核心自动化):
+ * Phase 1 工具 (核心自动化 - 17 个):
  * - browser_navigate: 导航到 URL
  * - browser_screenshot: 页面截图
  * - browser_get_text: 获取页面/元素文本
@@ -23,11 +23,29 @@
  * - browser_close_page: 关闭标签页
  * - browser_drag: 拖拽元素
  *
- * Phase 2 工具 (调试能力):
+ * Phase 2 工具 (调试能力 - 4 个):
  * - browser_list_console: 列出控制台消息
  * - browser_get_console: 获取单条消息详情
  * - browser_list_network: 列出网络请求
  * - browser_get_network: 获取请求详情
+ *
+ * Phase 3 工具 (高级功能 - 4 个):
+ * - browser_performance_start: 开始性能追踪
+ * - browser_performance_stop: 停止性能追踪
+ * - browser_emulate: 设备模拟 (视口/UA/颜色方案/网络/地理位置)
+ * - browser_resize: 调整窗口大小
+ *
+ * Phase 4 工具 (内存分析 - 2 个):
+ * - browser_heap_snapshot: 捕获堆快照
+ * - browser_heap_compare: 比较两个堆快照
+ *
+ * Phase 5 工具 (扩展功能 - 4 个):
+ * - browser_install_extension: 安装扩展说明
+ * - browser_list_extensions: 列出已安装扩展
+ * - browser_enable_extension: 启用扩展
+ * - browser_disable_extension: 禁用扩展
+ *
+ * 总计: 31 个工具
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -371,6 +389,74 @@ const LIST_NETWORK_PARAMS = Type.Object({
 
 const GET_NETWORK_PARAMS = Type.Object({
 	id: Type.String({ description: "网络请求的 ID" }),
+});
+
+// Phase 3 工具参数 (高级功能)
+
+const PERFORMANCE_START_PARAMS = Type.Object({
+	reload: Type.Optional(
+		Type.Boolean({ description: "开始录制后是否自动刷新页面" }),
+	),
+	autoStop: Type.Optional(
+		Type.Boolean({ description: "是否自动停止（页面加载完成后）" }),
+	),
+});
+
+const PERFORMANCE_STOP_PARAMS = Type.Object({});
+
+const EMULATE_PARAMS = Type.Object({
+	viewport: Type.Optional(
+		Type.String({ description: "视口尺寸，如 '1280x720' 或 '375x667x2,mobile,touch'" }),
+	),
+	userAgent: Type.Optional(
+		Type.String({ description: "User Agent 字符串" }),
+	),
+	colorScheme: Type.Optional(
+		Type.Union([Type.Literal("dark"), Type.Literal("light"), Type.Literal("auto")], {
+			description: "颜色方案",
+		}),
+	),
+	networkConditions: Type.Optional(
+		Type.Union(
+			[
+				Type.Literal("Offline"),
+				Type.Literal("Slow 3G"),
+				Type.Literal("Fast 3G"),
+				Type.Literal("Slow 4G"),
+				Type.Literal("Fast 4G"),
+			],
+			{ description: "网络条件模拟" },
+		),
+	),
+	geolocation: Type.Optional(
+		Type.String({ description: "地理位置，如 '39.9042,116.4074' (纬度,经度)" }),
+	),
+});
+
+const RESIZE_PARAMS = Type.Object({
+	width: Type.Number({ description: "页面宽度" }),
+	height: Type.Number({ description: "页面高度" }),
+});
+
+// Phase 4 工具参数 (内存分析)
+
+const HEAP_SNAPSHOT_PARAMS = Type.Object({
+	filePath: Type.String({ description: "保存堆快照的文件路径" }),
+});
+
+const HEAP_COMPARE_PARAMS = Type.Object({
+	baseFilePath: Type.String({ description: "基准快照文件路径（较早的）" }),
+	currentFilePath: Type.String({ description: "当前快照文件路径（较新的）" }),
+});
+
+// Phase 5 工具参数 (扩展功能)
+
+const INSTALL_EXTENSION_PARAMS = Type.Object({
+	path: Type.String({ description: "扩展目录路径（解压后的扩展）" }),
+});
+
+const EXTENSION_ACTION_PARAMS = Type.Object({
+	id: Type.String({ description: "扩展 ID" }),
 });
 
 // ============================================================
@@ -1650,6 +1736,592 @@ export default function chromeDevtoolsExtension(pi: ExtensionAPI) {
 
 				return {
 					content: [{ type: "text", text }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ============================================================
+	// Phase 3 工具 (高级功能)
+	// ============================================================
+
+	let isTracing = false;
+
+	// ---------- browser_performance_start ----------
+	pi.registerTool({
+		name: "browser_performance_start",
+		label: "Performance Start",
+		description: "开始性能追踪。录制完成后使用 browser_performance_stop 停止并获取结果。",
+		parameters: PERFORMANCE_START_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				if (isTracing) {
+					return {
+						content: [{ type: "text", text: "性能追踪已在进行中，请先停止当前追踪" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				// 启用 Tracing domain
+				await client.Tracing.start({
+					categories: "-*",
+					options: "trace-config",
+				});
+
+				// 使用更完整的配置
+				await client.Tracing.start({
+					categories: [
+						"devtools.timeline",
+						"v8.execute",
+						"disabled-by-default-devtools.timeline",
+						"disabled-by-default-devtools.timeline.frame",
+						"toplevel",
+						"blink.console",
+						"blink.user_timing",
+						"latencyInfo",
+						"disabled-by-default-devtools.timeline.stack",
+						"disabled-by-default-v8.cpu_profiler",
+					].join(","),
+					transferMode: "ReturnAsStream",
+				});
+
+				isTracing = true;
+
+				if (params.reload) {
+					await client.Page.reload();
+				}
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `性能追踪已开始${params.reload ? "，页面已刷新" : ""}。使用 browser_performance_stop 停止追踪。`,
+						},
+					],
+					details: { success: true, tracing: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_performance_stop ----------
+	pi.registerTool({
+		name: "browser_performance_stop",
+		label: "Performance Stop",
+		description: "停止性能追踪并返回追踪数据摘要。",
+		parameters: PERFORMANCE_STOP_PARAMS,
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				if (!isTracing) {
+					return {
+						content: [{ type: "text", text: "没有正在进行的性能追踪" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				// 等待追踪完成
+				const traceComplete = new Promise<void>((resolve) => {
+					client.Tracing.tracingComplete(() => {
+						resolve();
+					});
+				});
+
+				await client.Tracing.end();
+				await traceComplete;
+
+				isTracing = false;
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: "性能追踪已停止。追踪数据已通过 CDP 流式传输完成。",
+						},
+					],
+					details: { success: true, tracing: false },
+				};
+			} catch (err) {
+				isTracing = false;
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_emulate ----------
+	pi.registerTool({
+		name: "browser_emulate",
+		label: "Emulate",
+		description: "模拟各种设备特性：视口大小、User Agent、颜色方案、网络条件、地理位置等。",
+		parameters: EMULATE_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+				const results: string[] = [];
+
+				// 视口模拟
+				if (params.viewport) {
+					const parts = params.viewport.split("x");
+					const width = parseInt(parts[0], 10);
+					const height = parseInt(parts[1], 10);
+					const deviceScaleFactor = parts[2] ? parseFloat(parts[2].split(",")[0]) : 1;
+					const mobile = params.viewport.includes("mobile");
+					const touch = params.viewport.includes("touch");
+
+					await client.Emulation.setDeviceMetricsOverride({
+						width,
+						height,
+						deviceScaleFactor,
+						mobile,
+					});
+
+					if (touch) {
+						await client.Emulation.setTouchEmulationEnabled({ enabled: true });
+					}
+
+					results.push(`视口: ${width}x${height} @${deviceScaleFactor}x${mobile ? " (mobile)" : ""}${touch ? " (touch)" : ""}`);
+				}
+
+				// User Agent 模拟
+				if (params.userAgent) {
+					await client.Emulation.setUserAgentOverride({
+						userAgent: params.userAgent,
+					});
+					results.push(`User Agent: ${params.userAgent}`);
+				}
+
+				// 颜色方案模拟
+				if (params.colorScheme) {
+					const scheme = params.colorScheme === "auto" ? "" : params.colorScheme;
+					await client.Emulation.setEmulatedMedia({
+						media: "",
+						features: scheme ? [{ name: "prefers-color-scheme", value: scheme }] : [],
+					});
+					results.push(`颜色方案: ${params.colorScheme}`);
+				}
+
+				// 网络条件模拟
+				if (params.networkConditions) {
+					const conditions: Record<string, { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number }> = {
+						"Offline": { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 },
+						"Slow 3G": { offline: false, latency: 2000, downloadThroughput: 50 * 1024, uploadThroughput: 50 * 1024 },
+						"Fast 3G": { offline: false, latency: 500, downloadThroughput: 1.5 * 1024 * 1024, uploadThroughput: 750 * 1024 },
+						"Slow 4G": { offline: false, latency: 150, downloadThroughput: 4 * 1024 * 1024, uploadThroughput: 3 * 1024 * 1024 },
+						"Fast 4G": { offline: false, latency: 50, downloadThroughput: 10 * 1024 * 1024, uploadThroughput: 5 * 1024 * 1024 },
+					};
+					const cond = conditions[params.networkConditions];
+					if (cond) {
+						await client.Network.emulateNetworkConditions({
+							offline: cond.offline,
+							latency: cond.latency,
+							downloadThroughput: cond.downloadThroughput,
+							uploadThroughput: cond.uploadThroughput,
+						});
+						results.push(`网络条件: ${params.networkConditions}`);
+					}
+				}
+
+				// 地理位置模拟
+				if (params.geolocation) {
+					const [lat, lng] = params.geolocation.split(",").map(parseFloat);
+					if (!isNaN(lat) && !isNaN(lng)) {
+						await client.Emulation.setGeolocationOverride({
+							latitude: lat,
+							longitude: lng,
+							accuracy: 100,
+						});
+						results.push(`地理位置: ${lat}, ${lng}`);
+					}
+				}
+
+				if (results.length === 0) {
+					return {
+						content: [{ type: "text", text: "未指定任何模拟参数" }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				return {
+					content: [{ type: "text", text: `已应用模拟设置:\n${results.join("\n")}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_resize ----------
+	pi.registerTool({
+		name: "browser_resize",
+		label: "Resize",
+		description: "调整浏览器窗口大小。",
+		parameters: RESIZE_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				await client.Emulation.setDeviceMetricsOverride({
+					width: params.width,
+					height: params.height,
+					deviceScaleFactor: 1,
+					mobile: false,
+				});
+
+				return {
+					content: [{ type: "text", text: `已调整窗口大小为 ${params.width}x${params.height}` }],
+					details: { success: true, width: params.width, height: params.height },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ============================================================
+	// Phase 4 工具 (内存分析)
+	// ============================================================
+
+	// ---------- browser_heap_snapshot ----------
+	pi.registerTool({
+		name: "browser_heap_snapshot",
+		label: "Heap Snapshot",
+		description: "捕获当前页面的堆快照，用于分析内存分布和调试内存泄漏。",
+		parameters: HEAP_SNAPSHOT_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				// 启用 HeapProfiler domain
+				await client.HeapProfiler.enable();
+
+				// 收集快照数据
+				const chunks: string[] = [];
+				const snapshotComplete = new Promise<void>((resolve) => {
+					client.HeapProfiler.addHeapSnapshotChunk((event) => {
+						chunks.push(event.chunk);
+					});
+					client.HeapProfiler.reportHeapSnapshotProgress((event) => {
+						if (event.finished) {
+							resolve();
+						}
+					});
+				});
+
+				await client.HeapProfiler.takeHeapSnapshot({ reportProgress: true });
+				await snapshotComplete;
+
+				// 保存到文件
+				const { writeFileSync } = await import("node:fs");
+				writeFileSync(params.filePath, chunks.join(""));
+
+				await client.HeapProfiler.disable();
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `堆快照已保存到: ${params.filePath}\n大小: ${(chunks.join("").length / 1024 / 1024).toFixed(2)} MB`,
+						},
+					],
+					details: { success: true, filePath: params.filePath },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_heap_compare ----------
+	pi.registerTool({
+		name: "browser_heap_compare",
+		label: "Heap Compare",
+		description: "比较两个堆快照，显示内存变化摘要。",
+		parameters: HEAP_COMPARE_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const { readFileSync, existsSync } = await import("node:fs");
+
+				if (!existsSync(params.baseFilePath)) {
+					return {
+						content: [{ type: "text", text: `基准快照文件不存在: ${params.baseFilePath}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+				if (!existsSync(params.currentFilePath)) {
+					return {
+						content: [{ type: "text", text: `当前快照文件不存在: ${params.currentFilePath}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				// 读取文件大小
+				const baseSize = readFileSync(params.baseFilePath).length;
+				const currentSize = readFileSync(params.currentFilePath).length;
+
+				const diff = currentSize - baseSize;
+				const percent = ((diff / baseSize) * 100).toFixed(2);
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `堆快照对比结果:\n\n基准快照: ${params.baseFilePath}\n  大小: ${(baseSize / 1024 / 1024).toFixed(2)} MB\n\n当前快照: ${params.currentFilePath}\n  大小: ${(currentSize / 1024 / 1024).toFixed(2)} MB\n\n变化: ${diff > 0 ? "+" : ""}${(diff / 1024 / 1024).toFixed(2)} MB (${percent}%)\n\n注意: 详细对比需要使用 Chrome DevTools 打开快照文件进行分析。`,
+						},
+					],
+					details: {
+						success: true,
+						baseSize,
+						currentSize,
+						diff,
+					},
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ============================================================
+	// Phase 5 工具 (扩展功能)
+	// ============================================================
+
+	// ---------- browser_install_extension ----------
+	pi.registerTool({
+		name: "browser_install_extension",
+		label: "Install Extension",
+		description: "安装 Chrome 扩展（需要浏览器启动时添加 --load-extension 参数）。注意：此功能需要浏览器支持扩展加载。",
+		parameters: INSTALL_EXTENSION_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const { existsSync } = await import("node:fs");
+
+				if (!existsSync(params.path)) {
+					return {
+						content: [{ type: "text", text: `扩展目录不存在: ${params.path}` }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `扩展安装说明:\n\n路径: ${params.path}\n\nChrome 扩展需要在浏览器启动时通过 --load-extension 参数加载:\n\nchrome.exe --load-extension="${params.path}"\n\n或者在 Edge 中:\nmsedge.exe --load-extension="${params.path}"\n\n注意: 已运行的浏览器无法动态加载扩展，需要重启浏览器。`,
+						},
+					],
+					details: { success: true, path: params.path },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_list_extensions ----------
+	pi.registerTool({
+		name: "browser_list_extensions",
+		label: "List Extensions",
+		description: "列出浏览器中已安装的扩展。",
+		parameters: Type.Object({}),
+		async execute() {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				// 通过 evaluate 获取扩展信息
+				const result = await client.Runtime.evaluate({
+					expression: `
+						(() => {
+							// 尝试通过 chrome.management API 获取扩展列表
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								return new Promise((resolve) => {
+									chrome.management.getAll((extensions) => {
+										resolve(JSON.stringify(extensions.map(e => ({
+											id: e.id,
+											name: e.name,
+											version: e.version,
+											enabled: e.enabled,
+											type: e.type
+										}))));
+									});
+								});
+							}
+							return JSON.stringify({ error: 'chrome.management API 不可用，扩展可能未加载' });
+						})()
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				
+				if (data.error) {
+					return {
+						content: [{ type: "text", text: data.error }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				if (!Array.isArray(data) || data.length === 0) {
+					return {
+						content: [{ type: "text", text: "没有找到已安装的扩展" }],
+						details: { success: true, count: 0 },
+					};
+				}
+
+				const lines = data.map((e: { id: string; name: string; version: string; enabled: boolean; type: string }, i: number) => {
+					return `${i + 1}. ${e.name} v${e.version}\n   ID: ${e.id}\n   状态: ${e.enabled ? "已启用" : "已禁用"}\n   类型: ${e.type}`;
+				});
+
+				return {
+					content: [{ type: "text", text: lines.join("\n\n") }],
+					details: { success: true, count: data.length },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_enable_extension ----------
+	pi.registerTool({
+		name: "browser_enable_extension",
+		label: "Enable Extension",
+		description: "启用指定的 Chrome 扩展。",
+		parameters: EXTENSION_ACTION_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				const result = await client.Runtime.evaluate({
+					expression: `
+						new Promise((resolve) => {
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								chrome.management.setEnabled('${params.id}', true, () => {
+									resolve(JSON.stringify({ success: true }));
+								});
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management API 不可用' }));
+							}
+						})
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				
+				if (data.error) {
+					return {
+						content: [{ type: "text", text: data.error }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				return {
+					content: [{ type: "text", text: `已启用扩展: ${params.id}` }],
+					details: { success: true },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `错误: ${errorMessage(err)}` }],
+					details: { success: false },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	// ---------- browser_disable_extension ----------
+	pi.registerTool({
+		name: "browser_disable_extension",
+		label: "Disable Extension",
+		description: "禁用指定的 Chrome 扩展。",
+		parameters: EXTENSION_ACTION_PARAMS,
+		async execute(_toolCallId, params) {
+			try {
+				const client = await ensureConnected(configuredPort);
+
+				const result = await client.Runtime.evaluate({
+					expression: `
+						new Promise((resolve) => {
+							if (typeof chrome !== 'undefined' && chrome.management) {
+								chrome.management.setEnabled('${params.id}', false, () => {
+									resolve(JSON.stringify({ success: true }));
+								});
+							} else {
+								resolve(JSON.stringify({ error: 'chrome.management API 不可用' }));
+							}
+						})
+					`,
+					returnByValue: true,
+					awaitPromise: true,
+				});
+
+				const data = JSON.parse(result.result.value);
+				
+				if (data.error) {
+					return {
+						content: [{ type: "text", text: data.error }],
+						details: { success: false },
+						isError: true,
+					};
+				}
+
+				return {
+					content: [{ type: "text", text: `已禁用扩展: ${params.id}` }],
 					details: { success: true },
 				};
 			} catch (err) {

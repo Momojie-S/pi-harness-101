@@ -33,9 +33,9 @@ chrome.exe --remote-debugging-port=9222
 }
 ```
 
-## 提供的 Tools
+## 提供的 Tools (31 个)
 
-### Phase 1: 核心自动化
+### Phase 1: 核心自动化 (17 个)
 
 | Tool | 功能 |
 |------|------|
@@ -57,7 +57,7 @@ chrome.exe --remote-debugging-port=9222
 | `browser_close_page` | 关闭标签页 |
 | `browser_drag` | 拖拽元素 |
 
-### Phase 2: 调试能力
+### Phase 2: 调试能力 (4 个)
 
 | Tool | 功能 |
 |------|------|
@@ -65,6 +65,31 @@ chrome.exe --remote-debugging-port=9222
 | `browser_get_console` | 获取单条消息详情 |
 | `browser_list_network` | 列出网络请求（支持按资源类型过滤） |
 | `browser_get_network` | 获取请求详情（请求头、响应头、请求体、响应体） |
+
+### Phase 3: 高级功能 (4 个)
+
+| Tool | 功能 |
+|------|------|
+| `browser_performance_start` | 开始性能追踪 |
+| `browser_performance_stop` | 停止性能追踪 |
+| `browser_emulate` | 设备模拟（视口/UA/颜色方案/网络条件/地理位置） |
+| `browser_resize` | 调整窗口大小 |
+
+### Phase 4: 内存分析 (2 个)
+
+| Tool | 功能 |
+|------|------|
+| `browser_heap_snapshot` | 捕获堆快照 |
+| `browser_heap_compare` | 比较两个堆快照 |
+
+### Phase 5: 扩展功能 (4 个)
+
+| Tool | 功能 |
+|------|------|
+| `browser_install_extension` | 安装扩展说明 |
+| `browser_list_extensions` | 列出已安装扩展 |
+| `browser_enable_extension` | 启用扩展 |
+| `browser_disable_extension` | 禁用扩展 |
 
 ## 提供的 Commands
 

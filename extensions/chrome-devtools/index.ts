@@ -5,7 +5,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { loadConfig, DEFAULT_PORT } from "./src/config.ts";
 import { Type } from "typebox";
 import CDP from "chrome-remote-interface";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
@@ -48,51 +48,7 @@ interface NetworkRequest {
 	timestamp: number;
 }
 
-// ============================================================
-// 配置加载
-// ============================================================
-
-const DEFAULT_PORT = 19999;
-const CONFIG_FILENAME = "chrome-devtools.json";
-
-function loadConfig(cwd: string): { port: number; source: string } {
-	const envPort = process.env.CHROME_DEBUG_PORT;
-	if (envPort) {
-		const port = parseInt(envPort, 10);
-		if (!isNaN(port) && port > 0 && port <= 65535) {
-			return { port, source: `环境变量 CHROME_DEBUG_PORT=${port}` };
-		}
-	}
-
-	const projectConfigPath = join(cwd, CONFIG_DIR_NAME, CONFIG_FILENAME);
-	if (existsSync(projectConfigPath)) {
-		const config = readJsonConfig<{ port?: number }>(projectConfigPath);
-		if (config?.port) {
-			return { port: config.port, source: `项目配置 ${projectConfigPath}` };
-		}
-	}
-
-	const homeDir = process.env.USERPROFILE || process.env.HOME || "";
-	if (homeDir) {
-		const globalConfigPath = join(homeDir, CONFIG_DIR_NAME, "agent", CONFIG_FILENAME);
-		if (existsSync(globalConfigPath)) {
-			const config = readJsonConfig<{ port?: number }>(globalConfigPath);
-			if (config?.port) {
-				return { port: config.port, source: `全局配置 ${globalConfigPath}` };
-			}
-		}
-	}
-
-	return { port: DEFAULT_PORT, source: "默认值" };
-}
-
-function readJsonConfig<T>(filePath: string): T | null {
-	try {
-		return JSON.parse(readFileSync(filePath, "utf-8")) as T;
-	} catch {
-		return null;
-	}
-}
+// 配置加载逻辑（loadConfig / DEFAULT_PORT）已抽到 ./src/config.ts（纯逻辑，便于单元测试）
 
 // ============================================================
 // 连接管理

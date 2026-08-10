@@ -2,8 +2,14 @@
   "name": "pi-chrome-devtools",
   "version": "0.1.0",
   "private": true,
+  "scripts": {
+    "test": "vitest run"
+  },
   "dependencies": {
     "chrome-remote-interface": "^0.34.0"
+  },
+  "devDependencies": {
+    "vitest": "^3"
   },
   "pi": {
     "extensions": ["./index.ts"]

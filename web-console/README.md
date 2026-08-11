@@ -69,7 +69,7 @@ Environment=PI_CODING_AGENT_DIR=/home/<你>/.pi/agent
 
 web-console 需**常驻**（替代 tmux 的保活角色）才能随时远程访问。
 
-- **Windows 常驻**：计划任务（SYSTEM 开机自启）或 PM2/nssm。本仓 `scripts/` 提供计划任务方案——`start-web-console.ps1`（启动）+ `register-task.ps1`（注册，需管理员）。⚠ 用 `SYSTEM` 身份时**务必设 `PI_CODING_AGENT_DIR`**（见上），启动脚本里已含。
+- **Windows 常驻**：计划任务推荐 `AtLogOn` 触发 + `Interactive` 身份（当前登录用户）——进程落在 **Session 1**（交互式桌面会话），home/PATH 天然正确（无需 `PI_CODING_AGENT_DIR`），且 pyautogui / SendInput 等桌面自动化可用。若改用 `AtStartup` + `SYSTEM` 则落在 **Session 0**，桌面自动化失效且需额外设 `PI_CODING_AGENT_DIR`。也可用 PM2。需配开机自动登录才能无人值守恢复。**具体部署脚本**（路径、账户名、env 值）属运维实例，不随制品分发。
 - **外网访问**：frp 内网穿透 + 云服务器 nginx 反代 + HTTPS 证书；或 Tailscale 组网（免端口转发）。
 
 > 本仓只记**通用方式**。**某台机器的具体部署实例**（域名、frp/nginx 配置、计划任务名、Basic Auth 凭据）属于该机器的运维文档，不写死在本仓——例如本作者的实例记录在 `ops/docs/pi-web-console.md`（`pi.momojie.online`）。

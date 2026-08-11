@@ -25,9 +25,10 @@ interface ChatPanelProps {
   onOpenFile: (p: string) => void;
   onCmdSelect: (cmd: { name: string; builtin?: string }) => void;
   onOpenModelPicker: () => void;
+  onToggleSidebar: () => void;
 }
 
-export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, restarting, onSend, onAbort, onOpenFile, onCmdSelect, onOpenModelPicker }: ChatPanelProps) {
+export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, restarting, onSend, onAbort, onOpenFile, onCmdSelect, onOpenModelPicker, onToggleSidebar }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [cmdIndex, setCmdIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -51,6 +52,13 @@ export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, 
 
   return (
     <main className="flex min-h-0 flex-1 flex-col">
+      {/* 移动端顶栏：汉堡菜单按钮（PC 端隐藏） */}
+      <div className="flex items-center gap-3 border-b border-slate-800 px-3 py-2 lg:hidden">
+        <button onClick={onToggleSidebar} className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-300 hover:bg-slate-800" aria-label="打开侧边栏">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+        </button>
+        <span className="text-xs text-slate-500">{session ? (session.cwd.split(/[\\/]/).pop() ?? "") : "pi Web Console"}</span>
+      </div>
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {!session ? (
           <p className="mt-8 text-center text-sm text-slate-600">{sessionOrderCount ? "选择一个会话" : "点击左侧目录新建会话"}</p>

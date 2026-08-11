@@ -17,7 +17,7 @@ export default function App() {
   const stateRef = useRef<AppState>(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const { sessions, sessionOrder, activeSessionId, dirs, models, historySessions, ui, globalError, restarting } = state;
+  const { sessions, sessionOrder, activeSessionId, dirs, models, historySessions, ui, globalError, restarting, sidebarOpen } = state;
   const active = activeSessionId ? sessions[activeSessionId] : null;
   const ws = useWebSocket(dispatch, stateRef);
 
@@ -86,11 +86,13 @@ export default function App() {
         sessionOrder={sessionOrder}
         activeSessionId={activeSessionId}
         active={active}
+        sidebarOpen={sidebarOpen}
         onNewSession={newSession}
         onSelectSession={selectSession}
         onCloseSession={closeSession}
         onToggleDir={handleToggle}
         onOpenFile={handleOpenFile}
+        onCloseSidebar={() => dispatch({ type: "set_sidebar", open: false })}
       />
       <ChatPanel
         sessionId={activeSessionId}
@@ -103,6 +105,7 @@ export default function App() {
         onOpenFile={handleOpenFile}
         onCmdSelect={handleCmdSelect}
         onOpenModelPicker={openModelPicker}
+        onToggleSidebar={() => dispatch({ type: "toggle_sidebar" })}
       />
       <FileViewer fileViewer={ui.fileViewer} onClose={() => dispatch({ type: "ui_file_viewer_close" })} />
       <ModelPicker open={ui.modelPicker} models={models} onSelect={handleModelSelect} onClose={() => dispatch({ type: "ui_picker_close", which: "model" })} />

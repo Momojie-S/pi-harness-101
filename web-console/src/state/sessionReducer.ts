@@ -22,6 +22,8 @@ export interface AppState {
   globalError: string | null;
   /** 服务正在重启（收到 restarting 消息后置 true，重连后清零） */
   restarting: boolean;
+  /** 移动端侧边栏抽屉开关（PC 端始终显示，不受此控制） */
+  sidebarOpen: boolean;
 }
 
 export function newSessionState(cwd: string): SessionState {
@@ -44,6 +46,7 @@ export const initialState: AppState = {
   },
   globalError: null,
   restarting: false,
+  sidebarOpen: false,
 };
 
 // —— 副作用辅助：返回新 SessionState（reducer 内用）——
@@ -87,7 +90,10 @@ export type Action =
   | { type: "ui_picker_open"; which: "model" | "thinking" | "session" }
   | { type: "ui_picker_close"; which: "model" | "thinking" | "session" | "tree" }
   | { type: "ui_tree_open"; mode: "navigate" | "fork" }
-  | { type: "toggle_dir"; sessionId: string; dir: string };
+  | { type: "toggle_dir"; sessionId: string; dir: string }
+  // —— 用户操作：移动端侧边栏 ——
+  | { type: "toggle_sidebar" }
+  | { type: "set_sidebar"; open: boolean };
 
 export function sessionReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -104,8 +110,9 @@ export function sessionReducer(state: AppState, action: Action): AppState {
         ...state,
         sessions: { ...state.sessions, [action.sessionId]: session },
         sessionOrder: state.sessionOrder.includes(action.sessionId) ? state.sessionOrder : [...state.sessionOrder, action.sessionId],
-        // 仅新会话才抢焦点（修现状重连 bug：重连复用不切焦点）
+        // 仅新会话才抢焦点（修现状重连 bug：重连复用不切焦点）+ 移动端关闭抽屉
         activeSessionId: isNew ? action.sessionId : state.activeSessionId,
+        sidebarOpen: isNew ? false : state.sidebarOpen,
       };
     }
 
@@ -162,7 +169,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       return updateSessionInState(state, action.sessionId, (s) => ({ ...s, contextUsage: action.usage }));
 
     case "set_active":
-      return { ...state, activeSessionId: action.sessionId };
+      return { ...state, activeSessionId: action.sessionId, sidebarOpen: false };
 
     case "append_user_message": {
       const msg = { role: "user", content: [{ type: "text", text: action.text }], timestamp: Date.now() } as AgentMessage;
@@ -199,6 +206,11 @@ export function sessionReducer(state: AppState, action: Action): AppState {
         else expanded.add(action.dir);
         return { ...s, expandedDirs: expanded };
       });
+
+    case "toggle_sidebar":
+      return { ...state, sidebarOpen: !state.sidebarOpen };
+    case "set_sidebar":
+      return { ...state, sidebarOpen: action.open };
 
     default:
       return state;

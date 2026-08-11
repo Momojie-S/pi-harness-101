@@ -130,3 +130,10 @@ Web Console 是**独立 Node 应用**，不在这条加载链路上：它反过�
 - **实时 event 不缓存**：手机断开期间产生的 event 不被服务端缓存；但任务结果已落盘，重连后可拉取完整状态。若要看到中间过程，需在服务端额外缓存 event。
 - **bash 要求**：pi 在 Windows 需要 bash（Git Bash 等），Web 服务所在环境需满足。
 - **安全**：Web 服务暴露的是对 pi 的完全控制权（文件读写、命令执行），务必限制访问范围（Tailscale 内网 / 认证 / 工作目录白名单），不要直接暴露到公网无认证。
+
+## 路线图（待办）
+
+> 以下为已规划、暂未执行的工作（2025-01 暂存，优先做阿里云部署）。
+
+- **补分模块设计文档**：`modules/` 下补充 `ws-protocol.md`（WS 消息契约）、`session-management.md`（会话管理）、`command-system.md`（/command 分流）、`tool-rendering.md`（工具结果渲染）
+- **前端重构**：按 `modules/frontend-architecture.md` 拆分 `App.tsx`（`useReducer` 消除 ref 镜像 + 拆组件 + 类型贯穿），5 步有序小步

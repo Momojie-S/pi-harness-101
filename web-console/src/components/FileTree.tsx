@@ -1,9 +1,5 @@
 // 递归目录树组件（懒加载：点文件夹才请求子目录内容）
-interface DirEntry {
-  name: string;
-  type: "file" | "dir";
-  path: string;
-}
+import type { DirEntry } from "../types.ts";
 
 interface FileTreeProps {
   root: string;

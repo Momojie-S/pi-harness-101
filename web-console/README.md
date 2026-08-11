@@ -7,9 +7,13 @@
 ## 特性
 
 - 📱 **跨端**：同一套 UI 在手机和电脑上都好用（Tailwind 响应式）
-- 🗂️ **多工作目录 / 多会话**：一个常驻服务管理所有项目
+- 🗂️ **多工作目录 / 多会话**：一个常驻服务管理所有项目，后台并发执行
 - ⚡ **异步执行**：手机发完任务可以关闭，pi 在电脑上继续跑，回头查看结果
 - 🔌 **实时流式**：助手回复、工具调用实时显示
+- 🛠️ **工具结果差异化渲染**：read 点路径查看 / edit·write 显示 diff / bash 显示输出（[ADR-004](docs/design/adr/004-tool-result-rendering.md)）
+- 📁 **目录树浏览 + 文件查看**：懒加载展开，二进制三层过滤拒绝（[ADR-005](docs/design/adr/005-file-preview-safety.md)）
+- 💬 **`/command` 完整覆盖 CLI**：skills/prompts/extension + model/compact/thinking/resume/tree/fork（[ADR-006](docs/design/adr/006-slash-command.md)）
+- 🔁 **断线自动重连**：恢复所有会话订阅
 
 ## 技术栈
 
@@ -19,36 +23,67 @@
 
 ## 快速开始
 
-> 待实现。骨架与文档已就绪，代码随后补齐。
+**环境要求**：Node 20+；pi 已配置（`~/.pi/agent/auth.json` 里有 provider 的 API key）。
 
 ```bash
-# 安装依赖（待 package.json 就位）
 npm install
 
-# 开发模式（前后端）
+# 开发模式（前端 5173 + 后端 3000，vite 代理 /ws → 3000）
 npm run dev
 
-# 生产构建
+# 生产构建（产物 dist/client/）
 npm run build
 ```
 
-## 部署（Windows 常驻）
+**生产启动**（单端口：后端 serve dist/client + /ws）：
+```bash
+npm run build
+ALLOWED_DIRS="D:/my/project" PORT=3000 npm start   # = npx tsx server/index.ts
+```
+浏览器打开 `http://localhost:3000`。
 
-- **常驻**：用 PM2 for Windows 或 nssm 注册为开机自启 / 崩溃重启
-- **外网**：推荐 Tailscale（手机和电脑各装一个，免端口转发）
+## 环境变量
+
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `PORT` | 服务端口 | `3000` |
+| `ALLOWED_DIRS` | 允许操作的工作目录（`;` 分隔，安全白名单；未设则允许任意，仅限受信网络） | （未设） |
+| `WC_MODEL` | 默认模型（`provider/id` 格式） | `zai-coding-cn/glm-5.2` |
+| `PI_CODING_AGENT_DIR` | pi 的 agent 配置目录（见下方说明） | `~/.pi/agent`（由 `homedir()` 推断） |
+
+### `PI_CODING_AGENT_DIR` 何时需要？
+
+web-console 通过 pi SDK 驱动 agent，而 pi 的 **API key 存在 `~/.pi/agent/auth.json`**。当 web-console 以**系统服务 / 非用户账户**方式运行时（如 Windows 计划任务用 `SYSTEM` 身份、Linux systemd 等），进程的 home 目录不是你的用户目录，pi 的 `getAgentDir()` 会读到一个**空的** `.pi` → 报 `No API key found`。
+
+此时需显式设 `PI_CODING_AGENT_DIR` 指向你实际的 pi agent 目录（绝对路径）：
+```bash
+# Windows 计划任务（SYSTEM 身份）的启动脚本里
+$env:PI_CODING_AGENT_DIR = "C:\Users\<你的用户名>\.pi\agent"
+# Linux systemd
+Environment=PI_CODING_AGENT_DIR=/home/<你>/.pi/agent
+```
+
+> **交互方式运行**（用你自己的账户 `npm start` / `npm run dev`）则**不需要**设它——pi 能正常读到你的 `~/.pi/agent`。
+
+## 生产部署（常驻 + 外网）
+
+web-console 需**常驻**（替代 tmux 的保活角色）才能随时远程访问。
+
+- **Windows 常驻**：计划任务（SYSTEM 开机自启）或 PM2/nssm。本仓 `scripts/` 提供计划任务方案——`start-web-console.ps1`（启动）+ `register-task.ps1`（注册，需管理员）。⚠ 用 `SYSTEM` 身份时**务必设 `PI_CODING_AGENT_DIR`**（见上），启动脚本里已含。
+- **外网访问**：frp 内网穿透 + 云服务器 nginx 反代 + HTTPS 证书；或 Tailscale 组网（免端口转发）。
+
+> 本仓只记**通用方式**。**某台机器的具体部署实例**（域名、frp/nginx 配置、计划任务名、Basic Auth 凭据）属于该机器的运维文档，不写死在本仓——例如本作者的实例记录在 `ops/docs/pi-web-console.md`（`pi.momojie.online`）。
 
 ## 设计文档
 
 - [完整设计](docs/design/design.md)
-- [ADR（架构决策记录）](docs/design/adr/)
-  - [001 - 允许构建步骤](docs/design/adr/001-allow-build-step.md)
-  - [002 - SDK 同进程 vs RPC 子进程](docs/design/adr/002-sdk-in-process-vs-rpc-subprocess.md)
-  - [003 - 单进程多会话](docs/design/adr/003-single-process-multi-session.md)
+- [ADR（架构决策记录）](docs/design/adr/)：001 允许构建 · 002 SDK 同进程 · 003 单进程多会话 · 004 工具结果渲染 · 005 文件预览安全 · 006 斜杠命令
+- [前端架构（重构蓝图）](docs/design/modules/frontend-architecture.md)
 
 ## 安全提醒
 
 Web 服务暴露的是对 pi 的**完全控制权**（文件读写、命令执行）。务必：
 
-- 限制访问范围（Tailscale 内网 / 认证）
-- 配置工作目录白名单
-- **不要**直接暴露到公网无认证
+- 限制访问范围（Tailscale 内网 / 反代认证 / 工作目录白名单）
+- 暴露到公网时**必须加认证**（nginx Basic Auth / token）
+- 配置 `ALLOWED_DIRS` 白名单，避免暴露任意目录

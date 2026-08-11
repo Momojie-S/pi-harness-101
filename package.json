@@ -7,7 +7,10 @@
     "chrome-remote-interface": "^0.34.0"
   },
   "pi": {
-    "extensions": ["extensions/chrome-devtools/index.ts"],
+    "extensions": [
+      "extensions/chrome-devtools/index.ts",
+      "extensions/personal-context/index.ts"
+    ],
     "skills": ["skills"],
     "prompts": ["prompts"],
     "themes": ["themes"]

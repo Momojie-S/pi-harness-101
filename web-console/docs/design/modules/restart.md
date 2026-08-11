@@ -16,7 +16,7 @@
 
 - **触发者是 agent**（不是用户点按钮）：用户在对话里说"重启服务"，agent 调用 `restart_server` 工具。
 - **记录哪个 session 触发的**：`restart_server` 是 web-console 给每个 session 注册的 custom tool（闭包捕获 sessionId/toolCallId），agent 调用时天然知道当前 session。
-- **重启后通知该 session**：接班进程给悬空的 toolCallId 补一个 toolResult（"web 服务已重启完成"），agent 的 `continue()` 看到后自然回复用户——形成"触发重启 → 重启完成 → 继续工作"的闭环。
+- **重启后通知该 session**：接班进程给悬空的 toolCallId 补一个 toolResult（"web 服务已重启完成"），session 状态恢复完整。用户重连后看到补的 toolResult，发下一条消息时 agent 自然继续——不自动 continue（否则 agent 可能再次调用 restart_server，陷入重启自循环）。
 
 ## 3. 完整流程
 
@@ -44,8 +44,8 @@ main():
   │   ├─ appendMessage(toolResult{ toolCallId, "web 服务已重启完成" })  ← 补 result
   │   ├─ store.restoreFromSessionManager(cwd, sm)  ← createAgentSession 恢复
   │   │   └─ buildSessionContext 读到 assistant(toolCall)→toolResult ✓
-  │   ├─ session.agent.continue()  ← agent 看到 toolResult 后回复用户
   │   └─ clearPending()
+  │   （不调 agent.continue()——防自循环。用户发消息时 agent 自然继续）
   └─ 正常服务，等待前端重连
 ```
 
@@ -78,7 +78,7 @@ execute: async (toolCallId) => {
 
 ### 4.3 为什么补 toolResult 在 createAgentSession 之前
 
-`Agent.continue()` 要求 `agent.state.messages` 最后一条是 user 或 toolResult。如果先 createAgentSession（读到 assistant(toolCall) 无 result）再补 toolResult，agent.state 已固定，continue 会报 "Cannot continue from message role: assistant"。所以接班进程**先** appendMessage 写文件，**再** createAgentSession 恢复（buildSessionContext 读到 toolResult），最后 continue 才合法。
+让 session 文件状态完整（无悬空 toolCall）。如果先 createAgentSession（读到 assistant(toolCall) 无 result）再补，内存 agent.state 已固定，与文件不一致。先补文件再恢复，buildSessionContext 读到 assistant(toolCall)→toolResult，session 状态完整——用户发消息时 pi 能正常处理（user 跟在 toolResult 后面是合法的）。
 
 ### 4.4 为什么 spawn 后等 200ms 再退出
 
@@ -124,8 +124,8 @@ execute: async (toolCallId) => {
 
 测试环境（3001，Session 0）端到端验证通过：
 - agent 调用 restart_server → 老进程 spawn 接班 + SIGKILL 退出
-- 接班进程读 pending → 补 toolResult → 恢复 session → agent.continue() 完成
-- 前端 WS 重连 → open_session 命中 store → 显示补的 toolResult + agent 回复
+- 接班进程读 pending → 补 toolResult → 恢复 session 进 store
+- 前端 WS 重连 → open_session 命中 store → 显示补的 toolResult
 
 线上（Session 1）同样验证通过。
 
@@ -147,7 +147,7 @@ execute: async (toolCallId) => {
 额外修复与已知限制：
 - **P5 已修复**：前端 restarting 加 60s 超时兏底——接班进程起不来时提示「服务重启超时，请手动检查」。
 - **P4 已修复**：recover 失败的日志补 sessionId/sessionFile，便于定位。
-- **I7（已知限制）**：recover 失败立即 clearPending，瞬时失败会永久放弃自动 continue。当前取舍（避免重复尝试卡启动）。用户需手动再发消息触发 agent。
+- **I7（已知限制）**：recover 失败时 session 不进 store，但 session 文件已含 toolResult（状态完整）。用户重连后 openBySessionId 从文件恢复。不影响数据完整性，只是 recover 失败时需要重连恢复而非直接命中 store。
 - **I8 已修复**：open_session 的 continueRecent fallback 改为 `openBySessionId`——按 sid 精确查找 session 文件，找不到则报错。避免重连时打开错误的 session 或「对话不存在」。
 - **I9（待验证）**：createRestartTool 闭包捕获 sessionFile 快照，若 pi 内部换 sessionManager 可能陈旧。web-console 的 fork/navigate 走新建 ManagedSession，理论上不触发。
 

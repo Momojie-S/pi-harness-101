@@ -1,5 +1,5 @@
 // 服务自重启：agent 通过 restart_server 工具触发，spawn 接班进程 + 强制退出自己。
-// 接班进程启动时补 toolResult + 恢复 session + agent.continue()，让 agent 循环自然继续。
+// 接班进程启动时补 toolResult（让 session 状态完整） + 恢复 session 进 store（前端重连直接复用）。
 // 设计依据：docs/design/modules/restart.md
 import os from "node:os";
 import path from "node:path";
@@ -88,13 +88,16 @@ export function spawnReplacement(): void {
  * 接班进程启动时的恢复逻辑：
  * 1. 读 pending（没有说明是正常启动，跳过）
  * 2. 往 session 文件补 toolResult（"web 服务已重启完成"）
- * 3. 恢复 session（createAgentSession，读到补的 toolResult）
- * 4. agent.continue()——agent 看到 toolResult 后自然回复用户
- * 5. 放进 SessionStore（前端重连 open_session 时直接复用）
- * 6. 删 pending
+ * 3. createAgentSession 恢复 session（读到补的 toolResult）
+ * 4. 放进 SessionStore（前端重连 open_session 时直接复用）
+ * 5. 删 pending
+ *
+ * 不调 agent.continue()：否则 agent 看到 toolResult 后可能再次调用 restart_server，
+ * 陷入重启自循环。只补 toolResult 让 session 状态完整（无悬空 toolCall），
+ * 用户重连后看到的 messages 包含完整 toolResult，发下一条消息时 agent 自然继续。
  *
  * 补 toolResult 必须在 createAgentSession 之前：恢复时 buildSessionContext 读到
- * assistant(toolCall)→toolResult，agent.state 最后一条才是 toolResult，continue() 才合法。
+ * assistant(toolCall)→toolResult，session 状态完整，用户发消息时 agent 才能正常处理。
  */
 export async function recoverPendingSession(store: SessionStore): Promise<void> {
   const pending = readPending();

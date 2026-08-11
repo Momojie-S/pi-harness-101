@@ -88,6 +88,19 @@ export class SessionStore {
     return this.initSession(cwd, SessionManager.open(path));
   }
 
+  /**
+   * 按 sessionId 精确恢复会话（用于重启后前端重连：store miss 时按 sid 查文件，
+   * 而非 continueRecent 返回错误的最近 session）。找不到返回 null。
+   */
+  async openBySessionId(cwd: string, sessionId: string): Promise<ManagedSession | null> {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+    const sessions = await SessionManager.list(cwd);
+    const match = sessions.find((s: any) => s.id === sessionId);
+    if (!match) return null;
+    return this.initSession(cwd, SessionManager.open(match.path));
+  }
+
   /** 从已有的 SessionManager 恢复会话（用于重启后的接班进程） */
   async restoreFromSessionManager(cwd: string, sessionManager: SessionManager): Promise<ManagedSession> {
     return this.initSession(cwd, sessionManager);

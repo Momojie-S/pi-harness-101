@@ -148,8 +148,14 @@ execute: async (toolCallId) => {
 - **P5 已修复**：前端 restarting 加 60s 超时兏底——接班进程起不来时提示「服务重启超时，请手动检查」。
 - **P4 已修复**：recover 失败的日志补 sessionId/sessionFile，便于定位。
 - **I7（已知限制）**：recover 失败立即 clearPending，瞬时失败会永久放弃自动 continue。当前取舍（避免重复尝试卡启动）。用户需手动再发消息触发 agent。
-- **I8（降级场景，待办）**：recover 失败时 open_session 的 continueRecent fallback 可能打开错误的 session。正常路径不触发。
+- **I8 已修复**：open_session 的 continueRecent fallback 改为 `openBySessionId`——按 sid 精确查找 session 文件，找不到则报错。避免重连时打开错误的 session 或「对话不存在」。
 - **I9（待验证）**：createRestartTool 闭包捕获 sessionFile 快照，若 pi 内部换 sessionManager 可能陈旧。web-console 的 fork/navigate 走新建 ManagedSession，理论上不触发。
+
+### 第四轮修复：自循环 + UI 状态残留（同日）
+
+实测发现两个问题：
+1. **agent 自循环调用 restart_server**：接班进程 recoverPendingSession 调 `agent.continue()` 后，agent 看到 toolResult 又决定调 restart_server，陷入无限重启循环。**修复**：去掉 `agent.continue()`——只补 toolResult（让 session 状态完整），用户发下一条消息时 agent 自然继续。
+2. **前端 UI 状态残留**：WS 重连后 session_opened 的 existing 分支保留了旧的 `streaming=true` 和 `tools[restart_server].running`，导致页面显示「计算中」+ `⏳ restart_server` 卡片，但后端实际没在跑。**修复**：session_opened 的 existing 分支清除 `streaming/streamText/tools`。
 
 ## 9. 与计划任务的关系
 

@@ -135,14 +135,13 @@ export async function recoverPendingSession(store: SessionStore): Promise<void> 
 
     // 2. 恢复 session（读到补的 toolResult，agent.state 最后一条 = toolResult）
     const managed = await store.restoreFromSessionManager(pending.cwd, sm);
-    console.log(`[web-console] session 恢复成功: ${managed.sessionId.slice(-8)}，触发 agent 继续`);
+    console.log(`[web-console] session 恢复成功: ${managed.sessionId.slice(-8)}`);
 
-    // 3. 触发 agent 继续（它看到 toolResult 后回复用户）
-    managed.session.agent.continue().catch((e) => {
-      console.error(`[web-console] agent.continue 失败:`, e instanceof Error ? e.message : e);
-    });
+    // 不自动 agent.continue()：否则 agent 看到 toolResult 后可能再次调用 restart_server，
+    // 陷入重启自循环。只补 toolResult 让 session 状态完整（不悬空），用户看到「重启完成」后
+    // 自己发下一条消息时，agent 自然继续（看到 toolResult + 新消息）。
 
-    // 4. 清 pending
+    // 3. 清 pending
     clearPending();
   } catch (e) {
     console.error(`[web-console] 重启恢复失败 (session ${pending.sessionId.slice(-8)}, file ${pending.sessionFile}):`, e instanceof Error ? e.message : e);

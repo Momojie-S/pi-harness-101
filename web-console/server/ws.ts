@@ -65,7 +65,12 @@ export function handleConnection(
           }
           let managed;
           if (msg.sessionId) {
-            managed = store.get(msg.sessionId) ?? (await store.continueRecent(msg.cwd));
+            // 重连场景：按 sessionId 精确恢复（不能用 continueRecent——它会返回 cwd 下最近 session，
+            // 可能 ≠ 前端的 sid，导致「对话不存在」）
+            managed = store.get(msg.sessionId) ?? (await store.openBySessionId(msg.cwd, msg.sessionId));
+            if (!managed) {
+              return send({ type: "error", message: "该会话未找到（可能已过期），请新建会话", sessionId: msg.sessionId });
+            }
           } else {
             managed = await store.create(msg.cwd);
           }

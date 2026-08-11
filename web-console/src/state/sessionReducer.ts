@@ -98,7 +98,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       const existing = state.sessions[action.sessionId];
       const isNew = !existing;
       const session = existing
-        ? { ...existing, cwd: action.cwd, messages: action.messages, error: null, model: action.model }
+        ? { ...existing, cwd: action.cwd, messages: action.messages, error: null, model: action.model, streaming: false, streamText: "", tools: {} }
         : { ...newSessionState(action.cwd), messages: action.messages, model: action.model };
       return {
         ...state,

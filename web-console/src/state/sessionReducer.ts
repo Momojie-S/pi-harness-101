@@ -1,7 +1,7 @@
 // 会话状态 reducer（重构 Step 2a）。
 // 纯函数：所有跨组件状态变更的唯一入口。副作用（WS send、setTimeout）不在此。
 // 设计依据：docs/design/modules/frontend-architecture.md §4。
-import type { AgentMessage, AgentSessionEvent, CommandInfo, DirEntry, ModelInfo, SessionInfo } from "../types.ts";
+import type { AgentMessage, AgentSessionEvent, CommandInfo, ContextUsagePayload, DirEntry, ModelIdentity, ModelInfo, SessionInfo } from "../types.ts";
 import type { EntryTreeNode } from "../../server/types.ts";
 import type { SessionState } from "../types.ts";
 
@@ -20,10 +20,12 @@ export interface AppState {
     treePicker: { mode: "navigate" | "fork"; tree: EntryTreeNode[]; leafId: string | null } | null;
   };
   globalError: string | null;
+  /** 服务正在重启（收到 restarting 消息后置 true，重连后清零） */
+  restarting: boolean;
 }
 
 export function newSessionState(cwd: string): SessionState {
-  return { cwd, messages: [], streamText: "", streaming: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), error: null, commands: [] };
+  return { cwd, messages: [], streamText: "", streaming: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), error: null, commands: [], model: null, contextUsage: null };
 }
 
 export const initialState: AppState = {
@@ -41,6 +43,7 @@ export const initialState: AppState = {
     treePicker: null,
   },
   globalError: null,
+  restarting: false,
 };
 
 // —— 副作用辅助：返回新 SessionState（reducer 内用）——
@@ -60,7 +63,7 @@ function updateSessionInState(
 export type Action =
   // —— onServer ——
   | { type: "dirs"; dirs: string[] }
-  | { type: "session_opened"; sessionId: string; cwd: string; messages: AgentMessage[] }
+  | { type: "session_opened"; sessionId: string; cwd: string; messages: AgentMessage[]; model: ModelIdentity }
   | { type: "session_closed"; sessionId: string }
   | { type: "file_content"; path: string; content: string }
   | { type: "dir_content"; sessionId: string; path: string; entries: DirEntry[] }
@@ -68,8 +71,11 @@ export type Action =
   | { type: "models"; models: ModelInfo[] }
   | { type: "sessions_list"; sessions: SessionInfo[] }
   | { type: "entries_tree"; tree: EntryTreeNode[]; leafId: string | null }
+  | { type: "model_changed"; sessionId: string; model: ModelIdentity }
+  | { type: "context_usage"; sessionId: string; usage: ContextUsagePayload }
   | { type: "error"; message: string; sessionId?: string }
   | { type: "clear_global_error" }
+  | { type: "set_restarting"; restarting: boolean }
   // —— onAgentEvent（合并为单一 action，内 switch event.type）——
   | { type: "agent_event"; sessionId: string; event: AgentSessionEvent }
   // —— 用户操作：会话/消息 ——
@@ -92,8 +98,8 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       const existing = state.sessions[action.sessionId];
       const isNew = !existing;
       const session = existing
-        ? { ...existing, cwd: action.cwd, messages: action.messages, error: null }
-        : { ...newSessionState(action.cwd), messages: action.messages };
+        ? { ...existing, cwd: action.cwd, messages: action.messages, error: null, model: action.model }
+        : { ...newSessionState(action.cwd), messages: action.messages, model: action.model };
       return {
         ...state,
         sessions: { ...state.sessions, [action.sessionId]: session },
@@ -145,6 +151,15 @@ export function sessionReducer(state: AppState, action: Action): AppState {
 
     case "clear_global_error":
       return { ...state, globalError: null };
+
+    case "set_restarting":
+      return { ...state, restarting: action.restarting };
+
+    case "model_changed":
+      return updateSessionInState(state, action.sessionId, (s) => ({ ...s, model: action.model }));
+
+    case "context_usage":
+      return updateSessionInState(state, action.sessionId, (s) => ({ ...s, contextUsage: action.usage }));
 
     case "set_active":
       return { ...state, activeSessionId: action.sessionId };

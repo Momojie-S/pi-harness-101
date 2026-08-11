@@ -80,6 +80,7 @@ export function handleConnection(
             sessionId: managed.sessionId,
             cwd: managed.cwd,
             messages: managed.session.messages,
+            model: store.getModelInfo(managed.sessionId) ?? { provider: "", id: "", name: "" },
           });
           break;
         }
@@ -171,8 +172,8 @@ export function handleConnection(
           send({ type: "models", sessionId: msg.sessionId, models: await store.listModels() });
           break;
         case "set_model": {
-          const { name } = await store.setModel(msg.sessionId, msg.provider, msg.modelId);
-          send({ type: "model_changed", sessionId: msg.sessionId, provider: msg.provider, modelId: msg.modelId, name });
+          const model = await store.setModel(msg.sessionId, msg.provider, msg.modelId);
+          send({ type: "model_changed", sessionId: msg.sessionId, model });
           break;
         }
         case "compact": {
@@ -204,7 +205,7 @@ export function handleConnection(
             subscriptions.set(managed.sessionId, fn);
             store.subscribe(managed.sessionId, fn);
           }
-          send({ type: "session_opened", sessionId: managed.sessionId, cwd: managed.cwd, messages: managed.session.messages });
+          send({ type: "session_opened", sessionId: managed.sessionId, cwd: managed.cwd, messages: managed.session.messages, model: store.getModelInfo(managed.sessionId) ?? { provider: "", id: "", name: "" } });
           break;
         }
         case "list_entries": {
@@ -217,7 +218,7 @@ export function handleConnection(
           const m = store.get(msg.sessionId);
           if (m) {
             await m.session.navigateTree(msg.targetId);
-            send({ type: "session_opened", sessionId: msg.sessionId, cwd: m.cwd, messages: m.session.messages });
+            send({ type: "session_opened", sessionId: msg.sessionId, cwd: m.cwd, messages: m.session.messages, model: store.getModelInfo(msg.sessionId) ?? { provider: "", id: "", name: "" } });
           }
           break;
         }
@@ -232,7 +233,7 @@ export function handleConnection(
             subscriptions.set(newManaged.sessionId, fn);
             store.subscribe(newManaged.sessionId, fn);
           }
-          send({ type: "session_opened", sessionId: newManaged.sessionId, cwd: newManaged.cwd, messages: newManaged.session.messages });
+          send({ type: "session_opened", sessionId: newManaged.sessionId, cwd: newManaged.cwd, messages: newManaged.session.messages, model: store.getModelInfo(newManaged.sessionId) ?? { provider: "", id: "", name: "" } });
           break;
         }
 

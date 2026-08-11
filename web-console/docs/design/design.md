@@ -123,6 +123,8 @@ Web Console 是**独立 Node 应用**，不在这条加载链路上：它反过�
 | 断线重连 | 自动重连 + 恢复所有会话订阅 | ✅ |
 | 多端响应式 | 桌面三栏 / 手机单栏 | ✅ |
 | extension 命令 | 扩展注册的 /cmd（runtime.getCommands） | ✅ |
+| 状态栏 | 当前模型 + context 占用百分比/进度条（[modules/status-bar.md](modules/status-bar.md)） | ✅ |
+| 服务自重启 | agent 触发重启（spawn 接班 + 补 toolResult + agent 继续）（[modules/restart.md](modules/restart.md)） | ✅ |
 
 ## 已知限制
 

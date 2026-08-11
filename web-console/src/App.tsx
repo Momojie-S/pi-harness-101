@@ -17,7 +17,7 @@ export default function App() {
   const stateRef = useRef<AppState>(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const { sessions, sessionOrder, activeSessionId, dirs, models, historySessions, ui, globalError } = state;
+  const { sessions, sessionOrder, activeSessionId, dirs, models, historySessions, ui, globalError, restarting } = state;
   const active = activeSessionId ? sessions[activeSessionId] : null;
   const ws = useWebSocket(dispatch, stateRef);
 
@@ -54,6 +54,11 @@ export default function App() {
       if (activeSessionId) ws.send({ type: "list_entries", sessionId: activeSessionId } satisfies ClientMessage);
     }
   }
+  // 打开模型选择器（复用 /model 命令逻辑）
+  const openModelPicker = () => {
+    dispatch({ type: "ui_picker_open", which: "model" });
+    if (activeSessionId) ws.send({ type: "list_models", sessionId: activeSessionId } satisfies ClientMessage);
+  };
   const handleModelSelect = (provider: string, modelId: string) => {
     if (activeSessionId) ws.send({ type: "set_model", sessionId: activeSessionId, provider, modelId } satisfies ClientMessage);
     dispatch({ type: "ui_picker_close", which: "model" });
@@ -92,10 +97,12 @@ export default function App() {
         session={active}
         sessionOrderCount={sessionOrder.length}
         globalError={globalError}
+        restarting={restarting}
         onSend={send}
         onAbort={abort}
         onOpenFile={handleOpenFile}
         onCmdSelect={handleCmdSelect}
+        onOpenModelPicker={openModelPicker}
       />
       <FileViewer fileViewer={ui.fileViewer} onClose={() => dispatch({ type: "ui_file_viewer_close" })} />
       <ModelPicker open={ui.modelPicker} models={models} onSelect={handleModelSelect} onClose={() => dispatch({ type: "ui_picker_close", which: "model" })} />

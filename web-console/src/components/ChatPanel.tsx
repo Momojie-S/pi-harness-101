@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageView } from "./MessageView.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
+import { StatusBar } from "./StatusBar.tsx";
 import type { AgentMessage, SessionState } from "../types.ts";
 
 const BUILTIN_COMMANDS = [
@@ -18,13 +19,15 @@ interface ChatPanelProps {
   session: SessionState | null;
   sessionOrderCount: number;
   globalError: string | null;
+  restarting: boolean;
   onSend: (text: string) => void;
   onAbort: () => void;
   onOpenFile: (p: string) => void;
   onCmdSelect: (cmd: { name: string; builtin?: string }) => void;
+  onOpenModelPicker: () => void;
 }
 
-export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, onSend, onAbort, onOpenFile, onCmdSelect }: ChatPanelProps) {
+export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, restarting, onSend, onAbort, onOpenFile, onCmdSelect, onOpenModelPicker }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [cmdIndex, setCmdIndex] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -77,7 +80,18 @@ export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, 
           </>
         )}
         {globalError && <div className="rounded-lg border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">{globalError}</div>}
+        {restarting && <div className="rounded-lg border border-blue-800 bg-blue-950/40 p-3 text-sm text-blue-300">服务正在重启，连接恢复后将自动继续…</div>}
       </div>
+
+      {/* 状态栏：模型 + context 占用（仅会话存在时） */}
+      {session && (
+        <StatusBar
+          model={session.model}
+          contextUsage={session.contextUsage}
+          streaming={session.streaming}
+          onModelClick={onOpenModelPicker}
+        />
+      )}
 
       <div className="relative border-t border-slate-800 p-3">
         <CommandPalette cmds={filteredCmds} cmdIndex={cmdIndex} onSelect={(c) => { if (c.builtin) { onCmdSelect(c); setInput(""); } else setInput("/" + c.name + " "); }} />

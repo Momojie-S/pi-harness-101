@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SessionStore } from "./session-store.ts";
 import { handleConnection } from "./ws.ts";
+import { recoverPendingSession } from "./restart.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 // 前端构建产物（vite build → dist/）。生产模式下后端直接 serve，单端口对外。
@@ -76,6 +77,22 @@ async function main() {
   const wss = new WebSocketServer({ server, path: "/ws" });
   wss.on("connection", (ws) => handleConnection(ws, store, ALLOWED_DIRS));
 
+  // 启动时检查是否有重启待恢复（接班进程场景）
+  await recoverPendingSession(store);
+
+  // listen 加 EADDRINUSE 重试：重启时老进程刚退出、端口释放有短暂窗口。
+  // 有限重试（最多 10 次），避免端口被其他进程永久占用时无限循环。
+  let listenRetries = 0;
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE" && listenRetries < 10) {
+      listenRetries++;
+      console.log(`[web-console] 端口 ${PORT} 被占用，1 秒后重试（${listenRetries}/10）…`);
+      setTimeout(() => server.listen(PORT), 1000);
+    } else {
+      console.error(`[web-console] server error:`, err);
+      process.exit(1);
+    }
+  });
   server.listen(PORT, () => {
     console.log(`[web-console] 服务就绪: http://localhost:${PORT}  (ws: /ws)`);
     console.log(

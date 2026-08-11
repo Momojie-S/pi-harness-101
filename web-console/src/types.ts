@@ -4,9 +4,11 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { ContextUsagePayload, ModelIdentity } from "../server/types.ts";
 
 // 重新导出，让 App.tsx / 后续 hooks 只从 "./types.ts" 取类型
 export type { AgentMessage, AgentSessionEvent };
+export type { ModelIdentity, ContextUsagePayload };
 
 // —— 前端专用类型（视图模型 / 前端状态）——
 
@@ -62,4 +64,8 @@ export interface SessionState {
   expandedDirs: Set<string>;
   error: string | null;
   commands: CommandInfo[];
+  /** 当前模型（session_opened 携带 / model_changed 更新） */
+  model: ModelIdentity | null;
+  /** Context 占用（agent_settled 后后端推送） */
+  contextUsage: ContextUsagePayload | null;
 }

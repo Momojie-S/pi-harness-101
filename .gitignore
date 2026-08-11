@@ -6,3 +6,6 @@ Thumbs.db
 
 # pi 项目配置保持本地（含 settings.json / 扩展配置），不入库
 .pi/
+
+# 个人本地备忘（开发流程 / 部署操作），不入库
+AGENTS.local.md

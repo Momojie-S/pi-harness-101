@@ -8,6 +8,9 @@ import type { AgentMessage, AgentSessionEvent, DirEntry } from "../types.ts";
 import type { Action, AppState } from "../state/sessionReducer.ts";
 import { connectWs, type WsClient } from "../lib/wsClient.ts";
 
+// 重启超时定时器（单例：一个页面只有一个 WS 连接）
+let restartTimeout: ReturnType<typeof setTimeout> | null = null;
+
 export function useWebSocket(
   dispatch: (action: Action) => void,
   stateRef: MutableRefObject<AppState>,
@@ -20,6 +23,12 @@ export function useWebSocket(
 
     ws.onOpen(() => {
       dispatch({ type: "clear_global_error" });
+      dispatch({ type: "set_restarting", restarting: false });
+      // 服务重连成功，清除重启超时定时器
+      if (restartTimeout) {
+        clearTimeout(restartTimeout);
+        restartTimeout = null;
+      }
       ws.send({ type: "list_dirs" } satisfies ClientMessage);
       // 重连后重新订阅所有活跃会话
       for (const sid of stateRef.current.sessionOrder) {
@@ -44,7 +53,7 @@ function onServerMessage(msg: ServerMessage, ws: WsClient, dispatch: (a: Action)
       dispatch({ type: "dirs", dirs: msg.dirs });
       break;
     case "session_opened":
-      dispatch({ type: "session_opened", sessionId: msg.sessionId, cwd: msg.cwd, messages: msg.messages as AgentMessage[] });
+      dispatch({ type: "session_opened", sessionId: msg.sessionId, cwd: msg.cwd, messages: msg.messages as AgentMessage[], model: msg.model });
       // 副作用：补发拉取该会话的目录/命令
       ws.send({ type: "list_dir", sessionId: msg.sessionId } satisfies ClientMessage);
       ws.send({ type: "list_commands", sessionId: msg.sessionId } satisfies ClientMessage);
@@ -84,7 +93,21 @@ function onServerMessage(msg: ServerMessage, ws: WsClient, dispatch: (a: Action)
     case "error":
       dispatch({ type: "error", message: msg.message, sessionId: msg.sessionId });
       break;
+    case "restarting":
+      dispatch({ type: "set_restarting", restarting: true });
+      // 启动超时定时器：60s 后若未重连成功（接班进程没起来），提示用户
+      if (restartTimeout) clearTimeout(restartTimeout);
+      restartTimeout = setTimeout(() => {
+        dispatch({ type: "error", message: "服务重启超时（60s 未恢复），请手动检查后端服务" });
+        dispatch({ type: "set_restarting", restarting: false });
+      }, 60_000);
+      break;
     case "model_changed":
+      dispatch({ type: "model_changed", sessionId: msg.sessionId, model: msg.model });
+      break;
+    case "context_usage":
+      dispatch({ type: "context_usage", sessionId: msg.sessionId, usage: msg.usage });
+      break;
     case "thinking_changed":
       break;
   }

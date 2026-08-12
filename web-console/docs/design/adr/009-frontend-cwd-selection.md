@@ -45,7 +45,9 @@ pi 的 bash 工具本质是**任意命令执行**。一个会话即使在 `D:/pr
    - 设了：要求 cwd 落在某个根的子树内（用 `path.relative` 检查，含子目录，比现状的精确匹配更实用）；
    - 不设：完全放开，靠网络层兜底。
    - 向后兼容：现有设了 `ALLOWED_DIRS` 的部署依然受限，只是范围从「精确目录」放宽到「根子树」。
-3. **（浏览选择器增强）新增 `browse_dir` 消息**：不绑定会话，给定绝对路径返回其子目录；带可选根的越界检查。**不可复用现有 `list_dir`** —— 它绑定会话（先 `store.get(sessionId)` 再基于该会话 cwd 做 `path.relative` 越界检查），只能浏览「已打开会话 cwd 子树内」的目录；要用它选目录建会话是鸡生蛋。浏览选择器可后做，MVP 阶段输入框已够用。
+3. **（浏览选择器增强）新增 `browse_dir` 消息**：不绑定会话，给定绝对路径返回其子目录；带可选根的越界检查。**不可复用现有 `list_dir`** —— 它绑定会话（先 `store.get(sessionId)` 再基于该会话 cwd 做 `path.relative` 越界检查），只能浏览「已打开会话 cwd 子树内」的目录；要用它选目录建会话是鸡生蛋。浏览选择器可后做，MVP 阶段输入框已够用。**【2025-08 已实现】**：`browse_dir` 消息 + `DirBrowser` 模态已落地——侧边栏输入框旁加 📁 浏览按钮，逐级进入 / 上级（越界拦截；Windows 盘符根的上级回到「盘符列表」，支持跨盘符）。起点 = 盘符列表（Windows 检测 C-Z）/ `allowedDirs` / 根目录；只列目录、过滤隐藏目录。实现见 `src/components/pickers/DirBrowser.tsx` 与 `server/ws.ts` 的 `browse_dir` case。
+
+**选定目录后的行为（2025-08 演进）**：原方案是「选定 → 直接新建会话」；改为「选定 → 加载该目录的**历史会话列表**」（侧边栏内联，复用 `list_sessions` + `open_history`），滚动分页（前端按页切片 `visible` 游标），顶部提供「新建会话」。这样选目录后先看历史对话，可恢复任一历史或新建。实现见 `src/components/Sidebar.tsx` 的目录对话视图 + `src/state/sessionReducer.ts` 的 `dirSessions` 状态。
 
 ## 备选方案
 

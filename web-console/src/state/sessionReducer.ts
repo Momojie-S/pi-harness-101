@@ -1,7 +1,7 @@
 // 会话状态 reducer（重构 Step 2a）。
 // 纯函数：所有跨组件状态变更的唯一入口。副作用（WS send、setTimeout）不在此。
 // 设计依据：docs/design/modules/frontend-architecture.md §4。
-import type { AgentMessage, AgentSessionEvent, CommandInfo, ContextUsagePayload, DirEntry, ModelIdentity, ModelInfo, SessionInfo } from "../types.ts";
+import type { AgentMessage, AgentSessionEvent, CommandInfo, ContextUsagePayload, DirEntry, ModelIdentity, ModelInfo, SessionInfo, SystemErrorMessage } from "../types.ts";
 import type { EntryTreeNode } from "../../server/types.ts";
 import type { SessionState } from "../types.ts";
 
@@ -18,16 +18,24 @@ export interface AppState {
     thinkingPicker: boolean;
     sessionPicker: boolean;
     treePicker: { mode: "navigate" | "fork"; tree: EntryTreeNode[]; leafId: string | null } | null;
+    dirBrowser: { path: string; parent: string | null; dirs: { name: string; path: string }[] } | null;
+    /** 正在打开的历史会话（防重复点击 + loading 反馈；session_opened/error 时清空） */
+    openingSession: { cwd: string; path: string } | null;
   };
   globalError: string | null;
   /** 服务正在重启（收到 restarting 消息后置 true，重连后清零） */
   restarting: boolean;
   /** 移动端侧边栏抽屉开关（PC 端始终显示，不受此控制） */
   sidebarOpen: boolean;
+  /** 侧边栏「目录对话」视图：选定目录后加载其历史会话列表（ADR-009 扩展） */
+  dirSessions: { cwd: string; list: SessionInfo[]; loading: boolean; visible: number } | null;
 }
 
+/** 侧边栏目录对话视图每页条数（滚动加载更多，ADR-009 扩展） */
+const DIR_SESSIONS_PAGE = 20;
+
 export function newSessionState(cwd: string): SessionState {
-  return { cwd, messages: [], streamText: "", streaming: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), error: null, commands: [], model: null, contextUsage: null };
+  return { cwd, sessionFile: undefined, messageTotal: 0, messageOffset: 0, messages: [], streamText: "", streaming: false, compacting: false, retrying: false, steeringQueue: [], restored: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), commands: [], model: null, contextUsage: null };
 }
 
 export const initialState: AppState = {
@@ -43,10 +51,13 @@ export const initialState: AppState = {
     thinkingPicker: false,
     sessionPicker: false,
     treePicker: null,
+    dirBrowser: null,
+    openingSession: null,
   },
   globalError: null,
   restarting: false,
   sidebarOpen: false,
+  dirSessions: null,
 };
 
 // —— 副作用辅助：返回新 SessionState（reducer 内用）——
@@ -66,13 +77,13 @@ function updateSessionInState(
 export type Action =
   // —— onServer ——
   | { type: "dirs"; dirs: string[] }
-  | { type: "session_opened"; sessionId: string; cwd: string; messages: AgentMessage[]; model: ModelIdentity }
+  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: AgentMessage[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null }
   | { type: "session_closed"; sessionId: string }
   | { type: "file_content"; path: string; content: string }
   | { type: "dir_content"; sessionId: string; path: string; entries: DirEntry[] }
   | { type: "commands"; sessionId: string; commands: CommandInfo[] }
   | { type: "models"; models: ModelInfo[] }
-  | { type: "sessions_list"; sessions: SessionInfo[] }
+  | { type: "sessions_list"; cwd: string; sessions: SessionInfo[] }
   | { type: "entries_tree"; tree: EntryTreeNode[]; leafId: string | null }
   | { type: "model_changed"; sessionId: string; model: ModelIdentity }
   | { type: "context_usage"; sessionId: string; usage: ContextUsagePayload }
@@ -90,10 +101,23 @@ export type Action =
   | { type: "ui_picker_open"; which: "model" | "thinking" | "session" }
   | { type: "ui_picker_close"; which: "model" | "thinking" | "session" | "tree" }
   | { type: "ui_tree_open"; mode: "navigate" | "fork" }
+  | { type: "ui_dirbrowser_open" }
+  | { type: "ui_dirbrowser_close" }
+  | { type: "browse_result"; path: string; parent: string | null; dirs: { name: string; path: string }[] }
   | { type: "toggle_dir"; sessionId: string; dir: string }
   // —— 用户操作：移动端侧边栏 ——
   | { type: "toggle_sidebar" }
-  | { type: "set_sidebar"; open: boolean };
+  | { type: "set_sidebar"; open: boolean }
+  // —— 目录对话视图（侧边栏历史会话列表，ADR-009 扩展）——
+  | { type: "dir_sessions_load"; cwd: string }
+  | { type: "dir_sessions_more" }
+  | { type: "dir_sessions_clear" }
+  // —— 正在打开历史会话（loading + 防重复点击）——
+  | { type: "ui_history_opening"; cwd: string; path: string }
+  // —— 刷新恢复：后端发送活跃 session 列表 ——
+  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] }
+  // —— 分页：更早的历史消息片段到达 ——
+  | { type: "earlier_messages"; sessionId: string; messages: AgentMessage[]; offset: number };
 
 export function sessionReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -104,8 +128,8 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       const existing = state.sessions[action.sessionId];
       const isNew = !existing;
       const session = existing
-        ? { ...existing, cwd: action.cwd, messages: action.messages, error: null, model: action.model, streaming: false, streamText: "", tools: {} }
-        : { ...newSessionState(action.cwd), messages: action.messages, model: action.model };
+        ? { ...existing, cwd: action.cwd, sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, streaming: false, streamText: "", tools: {}, restored: false }
+        : { ...newSessionState(action.cwd), sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage };
       return {
         ...state,
         sessions: { ...state.sessions, [action.sessionId]: session },
@@ -113,6 +137,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
         // 仅新会话才抢焦点（修现状重连 bug：重连复用不切焦点）+ 移动端关闭抽屉
         activeSessionId: isNew ? action.sessionId : state.activeSessionId,
         sidebarOpen: isNew ? false : state.sidebarOpen,
+        ui: { ...state.ui, openingSession: null }, // 历史会话打开完成，清除 loading
       };
     }
 
@@ -142,8 +167,47 @@ export function sessionReducer(state: AppState, action: Action): AppState {
     case "models":
       return { ...state, models: action.models };
 
-    case "sessions_list":
-      return { ...state, historySessions: action.sessions };
+    case "sessions_list": {
+      // 同时供 SessionPicker（historySessions）和侧边栏目录对话视图（dirSessions）
+      const next: AppState = { ...state, historySessions: action.sessions };
+      if (state.dirSessions?.loading && state.dirSessions.cwd === action.cwd) {
+        next.dirSessions = { cwd: action.cwd, list: action.sessions, loading: false, visible: DIR_SESSIONS_PAGE };
+      }
+      return next;
+    }
+    case "dir_sessions_load":
+      return { ...state, dirSessions: { cwd: action.cwd, list: [], loading: true, visible: DIR_SESSIONS_PAGE } };
+    case "dir_sessions_more":
+      if (!state.dirSessions) return state;
+      return { ...state, dirSessions: { ...state.dirSessions, visible: state.dirSessions.visible + DIR_SESSIONS_PAGE } };
+    case "dir_sessions_clear":
+      return { ...state, dirSessions: null };
+
+    case "ui_history_opening":
+      return { ...state, ui: { ...state.ui, openingSession: { cwd: action.cwd, path: action.path } } };
+
+    case "sessions_active": {
+      // 刷新恢复：后端发送活跃 session 列表，前端恢复 sessionOrder + 创建占位 SessionState
+      const newSessions = { ...state.sessions };
+      const newOrder = [...state.sessionOrder];
+      for (const info of action.sessions) {
+        if (!newSessions[info.sessionId]) {
+          newSessions[info.sessionId] = { ...newSessionState(info.cwd), sessionFile: info.sessionFile, streaming: info.streaming, restored: true };
+        }
+        if (!newOrder.includes(info.sessionId)) newOrder.push(info.sessionId);
+      }
+      // 无活跃 session 时自动选中第一个（触发自动加载）
+      const newActive = state.activeSessionId ?? (newOrder.length > 0 ? newOrder[0] : null);
+      return { ...state, sessions: newSessions, sessionOrder: newOrder, activeSessionId: newActive };
+    }
+
+    case "earlier_messages":
+      // 分页：更早的消息前置插入 + 更新偏移
+      return updateSessionInState(state, action.sessionId, (s) => ({
+        ...s,
+        messages: [...action.messages, ...s.messages],
+        messageOffset: action.offset,
+      }));
 
     case "entries_tree":
       // 守卫：picker 关闭时丢弃（与现状 setTreePicker(prev => prev ? {...} : prev) 等价）
@@ -152,9 +216,11 @@ export function sessionReducer(state: AppState, action: Action): AppState {
 
     case "error":
       if (action.sessionId) {
-        return updateSessionInState(state, action.sessionId, (s) => ({ ...s, error: action.message }));
+        // error 作为消息按时间顺序插入消息流（和 TUI 一致：能看出什么时候出的问题）
+        const errMsg: SystemErrorMessage = { role: "system-error", content: action.message, timestamp: Date.now() };
+        return updateSessionInState(state, action.sessionId, (s) => ({ ...s, messages: [...s.messages, errMsg] }));
       }
-      return { ...state, globalError: action.message };
+      return { ...state, globalError: action.message, ui: { ...state.ui, openingSession: null } };
 
     case "clear_global_error":
       return { ...state, globalError: null };
@@ -173,6 +239,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
 
     case "append_user_message": {
       const msg = { role: "user", content: [{ type: "text", text: action.text }], timestamp: Date.now() } as AgentMessage;
+      // 新消息提交成功时清除旧的 session 级 error（如之前的 compact-in-progress 已过期）
       return updateSessionInState(state, action.sessionId, (s) => ({ ...s, messages: [...s.messages, msg] }));
     }
 
@@ -198,6 +265,14 @@ export function sessionReducer(state: AppState, action: Action): AppState {
 
     case "ui_tree_open":
       return { ...state, ui: { ...state.ui, treePicker: { mode: action.mode, tree: [], leafId: null } } };
+
+    case "ui_dirbrowser_open":
+      return { ...state, ui: { ...state.ui, dirBrowser: { path: "", parent: null, dirs: [] } } };
+    case "ui_dirbrowser_close":
+      return { ...state, ui: { ...state.ui, dirBrowser: null } };
+    case "browse_result":
+      if (state.ui.dirBrowser === null) return state; // 守卫：浏览器已关闭则丢弃
+      return { ...state, ui: { ...state.ui, dirBrowser: { path: action.path, parent: action.parent, dirs: action.dirs } } };
 
     case "toggle_dir":
       return updateSessionInState(state, action.sessionId, (s) => {
@@ -225,6 +300,27 @@ function reduceAgentEvent(state: AppState, sid: string, event: AgentSessionEvent
 
     case "agent_settled":
       return updateSessionInState(state, sid, (s) => ({ ...s, streaming: false }));
+
+    case "compaction_start":
+      return updateSessionInState(state, sid, (s) => ({ ...s, compacting: true }));
+
+    case "compaction_end":
+      return updateSessionInState(state, sid, (s) => ({ ...s, compacting: false }));
+
+    case "auto_retry_start":
+      // 大模型限流/API 错误时 SDK 自动重试；显示「重试中」提示
+      return updateSessionInState(state, sid, (s) => ({ ...s, retrying: true }));
+
+    case "auto_retry_end": {
+      // 重试结束：成功则清除提示；失败则追加 error 到消息流时间线
+      if (event.success) return updateSessionInState(state, sid, (s) => ({ ...s, retrying: false }));
+      const errMsg: SystemErrorMessage = { role: "system-error", content: event.finalError ?? "重试失败", timestamp: Date.now() };
+      return updateSessionInState(state, sid, (s) => ({ ...s, retrying: false, messages: [...s.messages, errMsg] }));
+    }
+
+    case "queue_update":
+      // steer 队列状态（agent 投递后自动清空）
+      return updateSessionInState(state, sid, (s) => ({ ...s, steeringQueue: [...event.steering] }));
 
     case "message_start":
       return updateSessionInState(state, sid, (s) => ({ ...s, streamText: "" }));

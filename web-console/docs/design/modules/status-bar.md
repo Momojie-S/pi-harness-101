@@ -33,8 +33,8 @@ pi 的 TUI 有状态栏展示这些信息，web-console 作为远程界面同样
 ### 3.1 新增/修改的 ServerMessage
 
 ```ts
-// session_opened 新增 model 字段（前端一进来就知道当前模型）
-| { type: "session_opened"; ...; model: ModelIdentity }
+// session_opened 携带 model + contextUsage（前端一进来就知道当前模型与上下文占用）
+| { type: "session_opened"; ...; model: ModelIdentity; contextUsage: ContextUsagePayload | null }
 
 // model_changed 改用 ModelIdentity（原先扁平的 provider/modelId/name 三字段收敛为一个对象）
 | { type: "model_changed"; sessionId: string; model: ModelIdentity }
@@ -49,7 +49,7 @@ pi 的 TUI 有状态栏展示这些信息，web-console 作为远程界面同样
 
 | 时机 | 推送内容 | 触发位置 |
 |------|---------|---------|
-| `open_session` / `open_history` / `navigate` / `fork` | `session_opened`（带 model） | `server/ws.ts` 各 case |
+| `open_session` / `open_history` / `navigate` / `fork` | `session_opened`（带 model + contextUsage） | `server/ws.ts` 各 case |
 | `set_model` | `model_changed` | `server/ws.ts` set_model case |
 | `agent_settled`（每轮结束） | `context_usage` | `server/session-store.ts` 事件订阅回调 |
 
@@ -84,7 +84,7 @@ reducer 新增两个 case（`model_changed` / `context_usage`），`session_open
 ┌─────────────────────────────────────┐
 │  消息流（滚动区）                     │
 ├─────────────────────────────────────┤
-│ claude-sonnet-4 ▾  ▓▓▓░░░ 45% 12k/200k │  ← StatusBar
+│ anthropic claude-sonnet-4 ▾  ▓▓▓░░░ 45% 12k/200k │  ← StatusBar
 ├─────────────────────────────────────┤
 │ [输入框]                      [发送]   │
 └─────────────────────────────────────┘
@@ -94,6 +94,7 @@ reducer 新增两个 case（`model_changed` / `context_usage`），`session_open
 
 | 元素 | PC（`sm:` 及以上） | 移动端（默认） |
 |------|-------------------|---------------|
+| Provider | 淡色前缀显示 | 淡色前缀显示 |
 | 模型名 | 完整显示 | 完整显示 |
 | 进度条 | 宽 `w-24` | 窄 `w-12` |
 | 百分比 | 显示 | 显示 |

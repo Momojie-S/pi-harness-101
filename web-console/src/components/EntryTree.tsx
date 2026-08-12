@@ -17,7 +17,7 @@ export function EntryTree({ nodes, leafId, depth = 0, onSelect }: Props) {
           <div key={n.id}>
             <button
               onClick={() => onSelect(n.id)}
-              className={`flex w-full items-start gap-1.5 rounded py-1 text-left text-xs ${isLeaf ? "font-medium text-green-400" : "text-slate-300 hover:bg-slate-800"}`}
+              className={`flex w-full items-start gap-1.5 rounded py-1 text-left text-xs ${isLeaf ? "font-medium text-ok" : "text-fg-secondary hover:bg-surface-2"}`}
               style={{ paddingLeft: depth * 14 + 8 }}
             >
               <span className="mt-0.5 shrink-0">{isLeaf ? "●" : "○"}</span>

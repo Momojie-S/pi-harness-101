@@ -118,7 +118,7 @@ export async function recoverPendingSession(store: SessionStore): Promise<void> 
     );
     // 找最后一条 assistant 的所有 toolCall
     const branch = sm.buildSessionContext().messages;
-    const lastAssistant = [...branch].reverse().find((m: any) => m.role === "assistant");
+    const lastAssistant = [...branch].reverse().find((m: any) => m.role === "assistant") as any;
     const pendingCalls = (lastAssistant?.content as any[] | undefined ?? [])
       .filter((c) => c?.type === "toolCall" && !existingResults.has(c.id));
     for (const tc of pendingCalls) {

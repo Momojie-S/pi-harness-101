@@ -52,8 +52,11 @@ function onServerMessage(msg: ServerMessage, ws: WsClient, dispatch: (a: Action)
     case "dirs":
       dispatch({ type: "dirs", dirs: msg.dirs });
       break;
+    case "sessions_active":
+      dispatch({ type: "sessions_active", sessions: msg.sessions });
+      break;
     case "session_opened":
-      dispatch({ type: "session_opened", sessionId: msg.sessionId, cwd: msg.cwd, messages: msg.messages as AgentMessage[], model: msg.model });
+      dispatch({ type: "session_opened", sessionId: msg.sessionId, cwd: msg.cwd, sessionFile: msg.sessionFile, messages: msg.messages as AgentMessage[], messageTotal: msg.messageTotal, messageOffset: msg.messageOffset, model: msg.model, contextUsage: msg.contextUsage });
       // 副作用：补发拉取该会话的目录/命令
       ws.send({ type: "list_dir", sessionId: msg.sessionId } satisfies ClientMessage);
       ws.send({ type: "list_commands", sessionId: msg.sessionId } satisfies ClientMessage);
@@ -85,13 +88,19 @@ function onServerMessage(msg: ServerMessage, ws: WsClient, dispatch: (a: Action)
       dispatch({ type: "models", models: msg.models });
       break;
     case "sessions_list":
-      dispatch({ type: "sessions_list", sessions: msg.sessions });
+      dispatch({ type: "sessions_list", cwd: msg.cwd, sessions: msg.sessions });
       break;
     case "entries_tree":
       dispatch({ type: "entries_tree", tree: msg.tree, leafId: msg.leafId });
       break;
+    case "browse_result":
+      dispatch({ type: "browse_result", path: msg.path, parent: msg.parent, dirs: msg.dirs });
+      break;
     case "error":
       dispatch({ type: "error", message: msg.message, sessionId: msg.sessionId });
+      break;
+    case "earlier_messages":
+      dispatch({ type: "earlier_messages", sessionId: msg.sessionId, messages: msg.messages as AgentMessage[], offset: msg.offset });
       break;
     case "restarting":
       dispatch({ type: "set_restarting", restarting: true });

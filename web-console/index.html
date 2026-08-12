@@ -1,6 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
+    <!-- 无 FOUC：首帧渲染前根据 localStorage / 系统偏好预设 data-theme（ADR-010） -->
+    <script>
+      (function () {
+        var saved = localStorage.getItem("pi-wc-theme");
+        var theme = saved || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>pi Web Console</title>

@@ -20,6 +20,8 @@ export interface ManagedSession {
   // 可用的斜杠命令（skills + prompts），供前端 / 自动补全
   commands: { name: string; description?: string }[];
   subscribers: Set<(msg: ServerMessage) => void>;
+  /** 打开会话各阶段耗时（诊断用） */
+  openTiming?: { loaderMs: number; createMs: number; totalMs: number };
 }
 
 // 管理所有活跃会话。设计依据见 docs/design/adr/003（单进程多会话）。
@@ -38,7 +40,9 @@ export class SessionStore {
 
     // 用 ResourceLoader 发现该 cwd 的 skills/prompts（供 / 命令补全），并复用给 createAgentSession
     const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir() });
+    const t0 = performance.now();
     await loader.reload();
+    const t1 = performance.now();
     // restart_server 工具：agent 可调用它重启 web 服务。闭包捕获 session 信息，
     // 触发后落盘 pending + spawn 接班 + 退出（execute 永不 resolve，进程直接 exit）。
     const restartTool = this.createRestartTool(sessionManager.getSessionId(), sessionManager.getSessionFile(), cwd);
@@ -51,6 +55,7 @@ export class SessionStore {
       resourceLoader: loader,
       customTools: [restartTool],
     });
+    const t2 = performance.now();
 
     // runtime.getCommands() 已汇总 extension + prompt + skill 三种命令
     //（见 AgentSession._bindExtensionCore），直接用，勿再手动拼 skill/prompt（会重复）
@@ -58,17 +63,23 @@ export class SessionStore {
       .getCommands()
       .map((c: any) => ({ name: c.name, description: c.description }));
 
-    const managed: ManagedSession = { session, sessionManager, cwd, sessionId: session.sessionId, commands, subscribers: new Set() };
+    const managed: ManagedSession = { session, sessionManager, cwd, sessionId: session.sessionId, commands, subscribers: new Set(), openTiming: { loaderMs: Math.round(t1 - t0), createMs: Math.round(t2 - t1), totalMs: Math.round(t2 - t0) } };
     // 订阅事件，广播给所有订阅者（事件带 sessionId，前端按此路由）
     session.subscribe((event) => {
       const msg: ServerMessage = { type: "agent_event", sessionId: managed.sessionId, event };
-      for (const sub of managed.subscribers) sub(msg);
+      // try/catch 每个 sub：pi 的 _emit 对 listener 抛错零防护（for 循环裸调），
+      // 一个 sub 抛错会中断本次事件给后续 sub 的分发，更糟的是抛穿 _emit 可能波及 agent 主流程。
+      for (const sub of managed.subscribers) {
+        try { sub(msg); } catch { /* 单个订阅者失败不影响其他 / 不中断 session 事件流 */ }
+      }
       // 每轮结束后推送 context 占用（getContextUsage 是实时计算的，此时刚好刷新）
       if (event.type === "agent_settled") {
         const usage = this.getContextUsage(managed.sessionId);
         if (usage) {
           const cuMsg: ServerMessage = { type: "context_usage", sessionId: managed.sessionId, usage };
-          for (const sub of managed.subscribers) sub(cuMsg);
+          for (const sub of managed.subscribers) {
+            try { sub(cuMsg); } catch { /* 同上 */ }
+          }
         }
       }
     });
@@ -110,6 +121,14 @@ export class SessionStore {
     return this.sessions.get(sessionId);
   }
 
+  /** 按 sessionFile 查找活跃会话（刷新恢复：open_history 时复用正在运行的 session，不新建） */
+  findBySessionFile(path: string): ManagedSession | undefined {
+    for (const [, m] of this.sessions) {
+      if (m.sessionManager.getSessionFile() === path) return m;
+    }
+    return undefined;
+  }
+
   getCommands(sessionId: string): { name: string; description?: string }[] {
     return this.sessions.get(sessionId)?.commands ?? [];
   }
@@ -148,6 +167,16 @@ export class SessionStore {
 
   unsubscribe(sessionId: string, fn: (msg: ServerMessage) => void) {
     this.sessions.get(sessionId)?.subscribers.delete(fn);
+  }
+
+  /** 列出所有活跃 session（供 WS 重连恢复） */
+  listActive(): { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] {
+    return Array.from(this.sessions.values()).map((m) => ({
+      sessionId: m.sessionId,
+      cwd: m.cwd,
+      sessionFile: m.sessionManager.getSessionFile(),
+      streaming: m.session.isStreaming,
+    }));
   }
 
   /**

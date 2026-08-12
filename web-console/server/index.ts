@@ -1,7 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SessionStore } from "./session-store.ts";
 import { handleConnection } from "./ws.ts";
@@ -22,7 +22,7 @@ const MIME: Record<string, string> = {
 };
 // 模型配置（provider/id 格式），默认 zai-coding-cn 的 glm-5.2
 const WC_MODEL = process.env.WC_MODEL ?? "zai-coding-cn/glm-5.2";
-// 允许的工作目录（分号分隔）。未设置则允许任意（仅本地/受信网络使用）
+// 工作目录根（分号分隔）：cwd 须在某根的子树内。未设则不限制（完全放开，靠网络层认证）。见 ADR-009
 const ALLOWED_DIRS = process.env.ALLOWED_DIRS
   ? process.env.ALLOWED_DIRS
       .split(";")
@@ -59,13 +59,19 @@ async function main() {
     }
     try {
       const data = await readFile(filePath);
-      res.writeHead(200, { "Content-Type": MIME[path.extname(filePath)] ?? "application/octet-stream" });
+      const ext = path.extname(filePath);
+      const headers: Record<string, string> = { "Content-Type": MIME[ext] ?? "application/octet-stream" };
+      // 缓存策略：assets/ 下带 hash 的产物 immutable 长缓存；index.html 等每次验证（no-cache），
+      // 确保刷新能拿到最新 hash 引用——否则浏览器启发式缓存旧 index.html，永远加载旧 JS。
+      if (rel.startsWith("/assets/")) headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      else headers["Cache-Control"] = "no-cache";
+      res.writeHead(200, headers);
       res.end(data);
     } catch {
       // SPA fallback：非静态资源返回 index.html，交由前端路由
       try {
         const html = await readFile(path.join(DIST_DIR, "index.html"));
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
         res.end(html);
       } catch {
         res.writeHead(404);
@@ -75,7 +81,22 @@ async function main() {
   });
 
   const wss = new WebSocketServer({ server, path: "/ws" });
-  wss.on("connection", (ws) => handleConnection(ws, store, ALLOWED_DIRS));
+  // 心跳：30s ping 一次，既保活（防 nginx/frp idle 超时静默断开）又检测半开连接
+  //（代理静默断开时 ws 库未必及时触发 close；无 pong 则 terminate，触发前端自动重连恢复）。
+  const alive = new WeakSet<WebSocket>();
+  const pingInterval = setInterval(() => {
+    for (const client of wss.clients) {
+      if (!alive.has(client)) { client.terminate(); continue; }
+      alive.delete(client);
+      client.ping();
+    }
+  }, 30_000);
+  wss.on("connection", (ws) => {
+    alive.add(ws);
+    ws.on("pong", () => alive.add(ws));
+    handleConnection(ws, store, ALLOWED_DIRS);
+  });
+  server.on("close", () => clearInterval(pingInterval));
 
   // 启动时检查是否有重启待恢复（接班进程场景）
   await recoverPendingSession(store);

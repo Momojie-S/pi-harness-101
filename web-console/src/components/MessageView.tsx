@@ -1,9 +1,10 @@
-// 渲染单条 AgentMessage（user / assistant / toolResult）
+// 渲染单条消息（user / assistant / toolResult / system-error）
 // read/edit/write 的文件路径可点击 → 打开文件查看器看完整内容
-import type { AgentMessage } from "../types.ts";
+import type { ChatMessage } from "../types.ts";
+import { Markdown } from "./Markdown.tsx";
 
 interface Props {
-  message: AgentMessage;
+  message: ChatMessage;
   onOpenFile: (path: string) => void;
   patches: Record<string, string>;
 }
@@ -30,6 +31,16 @@ function toBlocks(content: unknown): ContentBlock[] {
 }
 
 export function MessageView({ message, onOpenFile, patches }: Props) {
+  // 系统错误消息：红色提示，按时间顺序在消息流中显示（和 TUI 一致）
+  if (message.role === "system-error") {
+    return (
+      <div className="rounded-lg border border-danger bg-danger-soft p-3 text-sm text-danger">
+        <span className="font-medium">✗ 错误</span>
+        <p className="mt-1 whitespace-pre-wrap break-words">{message.content}</p>
+      </div>
+    );
+  }
+
   // AgentMessage 是宽联合（user/assistant/toolResult 有 content；bashExecution/custom 形状不同）。
   // 这里只渲染有 content 的三类；其余跳过。
   if (!("content" in message)) return null;
@@ -42,7 +53,7 @@ export function MessageView({ message, onOpenFile, patches }: Props) {
     const text = typeof content === "string" ? content : blocks.map((b) => "text" in b ? b.text : "").join("");
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600 px-4 py-2 text-sm">{text}</div>
+        <div className="max-w-[85%] rounded-lg rounded-br-sm bg-accent px-4 py-2 text-sm text-accent-contrast">{text}</div>
       </div>
     );
   }
@@ -55,18 +66,18 @@ export function MessageView({ message, onOpenFile, patches }: Props) {
     const patch = isEdit ? patches[message.toolCallId] : undefined;
     const text = blocks.map((b) => "text" in b ? b.text : "").join("\n");
     return (
-      <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-xs">
-        <div className={`font-mono ${isError ? "text-red-400" : "text-slate-400"}`}>
+      <div className="rounded-lg border bg-surface p-3 text-xs">
+        <div className={`font-mono ${isError ? "text-danger" : "text-fg-tertiary"}`}>
           {isError ? "✗ " : "→ "} {message.toolName}
         </div>
         {isRead ? (
-          <span className="text-slate-500">（{text.length} 字符，点击上方 📄 路径查看完整内容）</span>
+          <span className="text-fg-tertiary">（{text.length} 字符，点击上方 📄 路径查看完整内容）</span>
         ) : isEdit && patch ? (
-          <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-all font-mono text-slate-300">{patch}</pre>
+          <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-all font-mono text-fg-secondary">{patch}</pre>
         ) : isEdit ? (
-          <span className="text-slate-500">（已写入，点击上方 📄 路径查看）</span>
+          <span className="text-fg-tertiary">（已写入，点击上方 📄 路径查看）</span>
         ) : (
-          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all text-slate-300">{text.slice(0, 800)}</pre>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all text-fg-secondary">{text.slice(0, 800)}</pre>
         )}
       </div>
     );
@@ -77,11 +88,11 @@ export function MessageView({ message, onOpenFile, patches }: Props) {
     <div className="max-w-[92%] space-y-2">
       {blocks.map((b: ContentBlock, i: number) => {
         if (b.type === "text") {
-          return <p key={i} className="whitespace-pre-wrap break-words text-sm leading-relaxed">{b.text}</p>;
+          return <Markdown key={i}>{b.text}</Markdown>;
         }
         if (b.type === "thinking") {
           return (
-            <details key={i} className="rounded-md bg-slate-900/50 px-3 py-2 text-xs text-slate-400">
+            <details key={i} className="rounded-md bg-surface px-3 py-2 text-xs text-fg-tertiary">
               <summary className="cursor-pointer select-none">思考过程</summary>
               <pre className="mt-2 whitespace-pre-wrap">{b.thinking}</pre>
             </details>
@@ -92,18 +103,18 @@ export function MessageView({ message, onOpenFile, patches }: Props) {
         const filePath = args.path as string | undefined;
         const isFileTool = ["read", "edit", "write"].includes(b.name);
         return (
-          <div key={i} className="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs">
-            <span className="font-mono text-amber-400">🔧 {b.name}</span>
+          <div key={i} className="rounded-md border bg-surface px-3 py-2 text-xs">
+            <span className="font-mono text-accent">🔧 {b.name}</span>
             {isFileTool && filePath ? (
               <button
                 onClick={() => onOpenFile(filePath)}
-                className="mt-1 block max-w-full truncate text-left font-mono text-blue-400 hover:underline"
+                className="mt-1 block max-w-full truncate text-left font-mono text-accent hover:underline"
                 title={filePath}
               >
                 📄 {filePath}
               </button>
             ) : (
-              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-slate-400">
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all text-fg-tertiary">
                 {typeof b.arguments === "string" ? b.arguments : JSON.stringify(b.arguments, null, 2)}
               </pre>
             )}

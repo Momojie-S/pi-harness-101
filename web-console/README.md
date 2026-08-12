@@ -28,7 +28,7 @@
 ```bash
 npm install
 
-# 开发模式（前端 5173 + 后端 3000，vite 代理 /ws → 3000）
+# 开发模式（前端 30001 + 后端 30000，vite 代理 /ws → 30000；web 服务统一走 30000 段，避开线上）
 npm run dev
 
 # 生产构建（产物 dist/client/）

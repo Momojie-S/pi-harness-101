@@ -19,6 +19,7 @@ export type ClientMessage =
   | { type: "abort"; sessionId: string }
   | { type: "read_file"; sessionId: string; path: string }
   | { type: "list_dir"; sessionId: string; path?: string }
+  | { type: "browse_dir"; path?: string }
   | { type: "list_commands"; sessionId: string }
   | { type: "list_models"; sessionId: string }
   | { type: "set_model"; sessionId: string; provider: string; modelId: string }
@@ -28,16 +29,19 @@ export type ClientMessage =
   | { type: "open_history"; cwd: string; path: string }
   | { type: "list_entries"; sessionId: string }
   | { type: "navigate"; sessionId: string; targetId: string }
-  | { type: "fork"; sessionId: string; entryId: string };
+  | { type: "fork"; sessionId: string; entryId: string }
+  | { type: "load_earlier"; sessionId: string; before: number }; // 分页：加载更早的消息（before = 当前最早消息在完整列表的索引）
 
 // 后端 → 前端
 export type ServerMessage =
   | { type: "dirs"; dirs: string[] }
-  | { type: "session_opened"; sessionId: string; cwd: string; messages: unknown[]; model: ModelIdentity }
+  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] }
+  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null; timing?: { loaderMs: number; createMs: number; totalMs: number } }
   | { type: "session_closed"; sessionId: string }
   | { type: "agent_event"; sessionId: string; event: unknown }
   | { type: "file_content"; path: string; content: string }
   | { type: "dir_content"; sessionId: string; path: string; entries: { name: string; type: "file" | "dir"; path: string }[] }
+  | { type: "browse_result"; path: string; parent: string | null; dirs: { name: string; path: string }[] }
   | { type: "commands"; sessionId: string; commands: { name: string; description?: string }[] }
   | { type: "models"; sessionId: string; models: { provider: string; id: string; name: string }[] }
   | { type: "model_changed"; sessionId: string; model: ModelIdentity }
@@ -46,7 +50,8 @@ export type ServerMessage =
   | { type: "sessions_list"; cwd: string; sessions: { path: string; name?: string; modified: string; messageCount: number; firstMessage: string }[] }
   | { type: "entries_tree"; sessionId: string; tree: EntryTreeNode[]; leafId: string | null }
   | { type: "restarting"; sessionId: string }
-  | { type: "error"; message: string; sessionId?: string };
+  | { type: "error"; message: string; sessionId?: string }
+  | { type: "earlier_messages"; sessionId: string; messages: unknown[]; offset: number; hasMore: boolean }; // 分页：更早的消息片段
 
 /** 当前模型的标识（provider/id/name 三元组） */
 export interface ModelIdentity {

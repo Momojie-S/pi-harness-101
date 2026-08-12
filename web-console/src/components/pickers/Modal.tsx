@@ -11,7 +11,7 @@ export function Modal({ open, onClose, children, bodyClass }: ModalProps) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className={bodyClass ?? "w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-2"} onClick={(e) => e.stopPropagation()}>
+      <div className={bodyClass ?? "w-full max-w-md rounded-lg border-strong bg-surface-elevated p-2 shadow-lg"} onClick={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>

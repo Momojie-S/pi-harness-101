@@ -25,27 +25,28 @@ export function StatusBar({ model, contextUsage, streaming, onModelClick }: Stat
   const window = contextUsage?.contextWindow ?? 0;
 
   // 进度条颜色：< 70% 绿 / 70-90% 黄 / > 90% 红
-  const barColor = percent == null ? "bg-slate-600" : percent >= 90 ? "bg-red-500" : percent >= 70 ? "bg-amber-500" : "bg-emerald-500";
+  const barColor = percent == null ? "bg-fg-disabled" : percent >= 90 ? "bg-danger" : percent >= 70 ? "bg-warn" : "bg-ok";
 
   return (
-    <div className="flex items-center gap-2 border-t border-slate-800 px-3 py-1.5 text-xs text-slate-400">
+    <div className="flex items-center gap-2 border-t px-3 py-1.5 text-xs text-fg-tertiary">
       {/* 模型：点击触发 ModelPicker */}
       <button
         onClick={onModelClick}
-        className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-slate-800"
+        className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-surface-2"
         title={providerTag}
       >
-        <span className="text-slate-300">{modelName}</span>
-        <span className="text-slate-600">▾</span>
+        {model && <span className="text-fg-disabled">{model.provider}</span>}
+        <span className="text-fg-secondary">{modelName}</span>
+        <span className="text-fg-disabled">▾</span>
       </button>
 
       {/* 分隔点 */}
-      <span className="text-slate-700">·</span>
+      <span className="text-fg-disabled">·</span>
 
       {/* Context 占用 */}
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         {/* 进度条：移动端窄，PC 端宽 */}
-        <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-slate-800 sm:w-24">
+        <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-surface-2 sm:w-24">
           <div
             className={`h-full rounded-full transition-all ${barColor}`}
             style={{ width: percent != null ? `${Math.min(percent, 100)}%` : "0%" }}
@@ -55,13 +56,13 @@ export function StatusBar({ model, contextUsage, streaming, onModelClick }: Stat
         {/* 数值文本：移动端只显示百分比，PC 端显示 used/window */}
         {percent != null ? (
           <>
-            <span className="shrink-0 tabular-nums text-slate-400">{Math.round(percent)}%</span>
-            <span className="hidden shrink-0 tabular-nums text-slate-500 sm:inline">
+            <span className="shrink-0 tabular-nums text-fg-secondary">{Math.round(percent)}%</span>
+            <span className="hidden shrink-0 tabular-nums text-fg-tertiary sm:inline">
               {tokens != null ? fmtTokens(tokens) : "?"} / {window > 0 ? fmtTokens(window) : "?"}
             </span>
           </>
         ) : (
-          <span className="shrink-0 text-slate-600">
+          <span className="shrink-0 text-fg-disabled">
             {streaming ? "计算中…" : "上下文就绪"}
           </span>
         )}

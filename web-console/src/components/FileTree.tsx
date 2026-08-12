@@ -24,14 +24,14 @@ function Nodes({
   const entries = contents[dirPath];
   if (!entries) {
     return (
-      <div className="py-0.5 text-xs text-slate-600" style={{ paddingLeft: depth * 12 + 8 }}>
+      <div className="py-0.5 text-xs text-fg-tertiary" style={{ paddingLeft: depth * 12 + 8 }}>
         加载中…
       </div>
     );
   }
   if (entries.length === 0) {
     return (
-      <div className="py-0.5 text-xs text-slate-600" style={{ paddingLeft: depth * 12 + 8 }}>
+      <div className="py-0.5 text-xs text-fg-tertiary" style={{ paddingLeft: depth * 12 + 8 }}>
         （空）
       </div>
     );
@@ -46,7 +46,7 @@ function Nodes({
               <>
                 <button
                   onClick={() => onToggle(e.path)}
-                  className="flex w-full items-center gap-1 rounded py-0.5 text-left text-xs text-slate-300 hover:bg-slate-800"
+                  className="flex w-full items-center gap-1 rounded py-0.5 text-left text-xs text-fg-secondary hover:bg-surface-2"
                   style={{ paddingLeft: depth * 12 + 8 }}
                 >
                   <span>{isOpen ? "📂" : "📁"}</span>
@@ -66,7 +66,7 @@ function Nodes({
             ) : (
               <button
                 onClick={() => onOpenFile(e.path)}
-                className="flex w-full items-center gap-1 rounded py-0.5 text-left text-xs text-slate-400 hover:bg-slate-800"
+                className="flex w-full items-center gap-1 rounded py-0.5 text-left text-xs text-fg-tertiary hover:bg-surface-2"
                 style={{ paddingLeft: depth * 12 + 8 }}
               >
                 <span>📄</span>

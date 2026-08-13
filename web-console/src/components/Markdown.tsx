@@ -1,18 +1,42 @@
-// Markdown 渲染组件：react-markdown + remark-gfm（GFM 表格/删除线/任务列表）。
-// 封装统一的元素样式（代码块横向滚动、表格滚动、行内代码高亮等），供 MessageView / streamText 复用。
-// 设计依据：ADR-013。
+// Markdown 渲染组件：react-markdown + remark-gfm（GFM 表格/删除线/任务列表）
+//  + rehype-highlight（代码块语法高亮，ADR-014）。
+// 封装统一的元素样式（代码块横向滚动、表格滚动、行内代码高亮等），供
+// MessageView / ChatPanel（variant="inline"）与 FileViewer（variant="block"）复用。
+// 设计依据：ADR-013（markdown 渲染）、ADR-014（代码高亮）。
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+// rehype-highlight 默认只注册 highlight.js common 子集（~37 语言），
+// 不含 powershell / dockerfile——而本工具部署在 Windows、大量处理 PowerShell / 容器脚本，
+// 故在 common 基础上补注册这两个语言（ADR-014）。每语言 grammar gzip ~3-5KB，可接受。
+import { common } from "lowlight";
+import powershell from "highlight.js/lib/languages/powershell";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
+
+/** rehype-highlight 配置：common 子集 + powershell + dockerfile */
+const highlightLanguages = { ...common, powershell, dockerfile };
 
 interface Props {
   children: string;
+  /**
+   * 代码块（pre）样式变体：
+   * - "inline"（默认，聊天消息）：max-h-80 限高 + 内部滚动 + 圆角边框背景。
+   * - "block"（文件查看器）：不限高、无边框背景，由外层容器统一滚动。
+   */
+  variant?: "inline" | "block";
 }
 
-export function Markdown({ children }: Props) {
+export function Markdown({ children, variant = "inline" }: Props) {
+  // block 变体：去掉限高/边框/内边距，让代码铺满文件查看器，滚动交给外层。
+  const preClass =
+    variant === "block"
+      ? "my-0 text-xs"
+      : "my-2 max-h-80 overflow-auto rounded-lg border bg-surface p-3 text-xs";
   return (
     <div className="text-sm leading-relaxed [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { languages: highlightLanguages }]]}
         components={{
           // 标题
           h1: ({ children }) => <h1 className="mt-4 mb-2 text-lg font-bold">{children}</h1>,
@@ -25,19 +49,19 @@ export function Markdown({ children }: Props) {
           ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
           ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="pl-0.5">{children}</li>,
-          // 行内代码
+          // 行内代码 / 代码块内容
+          // 注意：rehype-highlight 会给 code 加 hljs class，可能排在 language-xxx 前面，
+          // 故用 includes 判断是否为代码块（fenced code），而非 startsWith。
           code: ({ children, className }) => {
-            // 多行代码块（react-markdown 给 code 加 language-xxx class 时，它在 pre 内）
-            const isBlock = className?.startsWith("language-");
+            const isBlock = className?.includes("language-");
             if (isBlock) {
+              // 透传 className（含 hljs + language-xxx），让 rehype-highlight 的 token span 生效
               return <code className={`font-mono text-xs ${className ?? ""}`}>{children}</code>;
             }
             return <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>;
           },
-          // 代码块容器：横向滚动，不撑破布局
-          pre: ({ children }) => (
-            <pre className="my-2 overflow-x-auto rounded-lg border bg-surface p-3 text-xs">{children}</pre>
-          ),
+          // 代码块容器：inline 变体横+纵向滚动（移动端 max-h-80）；block 变体不限高
+          pre: ({ children }) => <pre className={preClass}>{children}</pre>,
           // 引用
           blockquote: ({ children }) => (
             <blockquote className="my-2 border-l-2 border-fg-quaternary pl-3 text-fg-secondary">{children}</blockquote>

@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ClientMessage } from "../server/types.ts";
 import type { AppState } from "./state/sessionReducer.ts";
 import { initialState, sessionReducer } from "./state/sessionReducer.ts";
@@ -19,6 +19,8 @@ export default function App() {
   // ⚠ 单一 stateRef：仅供 WS 重连读快照（ADR-008）。其余一律走 dispatch。
   const stateRef = useRef<AppState>(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+  // 调试：暴露 state 到 window（性能测试用）
+  useEffect(() => { (window as any).__appState = state; }, [state]);
 
   // 主题（亮/暗，ADR-010）：App 层调用一次，下传给 ThemeToggle
   const { theme, toggleTheme } = useTheme();
@@ -41,6 +43,9 @@ export default function App() {
   const newSession = (cwd: string) => {
     const trimmed = cwd.trim();
     if (!trimmed) return;
+    // 即时反馈：标记「创建中」（path 空=新建，session_opened 时 reducer 清除）。
+    // 手机 frp 网络延迟下，无反馈用户会以为点击没生效（AGENTS.md 交互反馈纪律）。
+    dispatch({ type: "ui_history_opening", cwd: trimmed, path: "" });
     addRecentDir(trimmed);
     setRecentDirs(getRecentDirs());
     ws.send({ type: "open_session", cwd: trimmed } satisfies ClientMessage);
@@ -71,11 +76,19 @@ export default function App() {
     dispatch({ type: "toggle_dir", sessionId: activeSessionId, dir });
     if (!active.expandedDirs.has(dir) && !active.dirContents[dir]) ws.send({ type: "list_dir", sessionId: activeSessionId, path: dir } satisfies ClientMessage);
   };
-  const handleOpenFile = (p: string) => activeSessionId && ws.send({ type: "read_file", sessionId: activeSessionId, path: p } satisfies ClientMessage);
+  // useCallback 稳定引用：MessageView memo 依赖 onOpenFile 不变。ws 是稳定引用（useWebSocket useState lazy init），
+  // 故仅随 activeSessionId 变——切换会话时重建是必要的（read_file 要带上正确的 sessionId）。
+  const handleOpenFile = useCallback((p: string) => {
+    if (!activeSessionId) return;
+    dispatch({ type: "file_loading", path: p }); // 立即显示 loading（file_content 到达后清除）
+    ws.send({ type: "read_file", sessionId: activeSessionId, path: p } satisfies ClientMessage);
+  }, [activeSessionId, ws]);
 
   function handleCmdSelect(cmd: { name: string; builtin?: string }) {
     if (cmd.builtin === "compact") {
       if (activeSessionId) ws.send({ type: "compact", sessionId: activeSessionId } satisfies ClientMessage);
+    } else if (cmd.builtin === "reload") {
+      if (activeSessionId) ws.send({ type: "reload_session", sessionId: activeSessionId } satisfies ClientMessage);
     } else if (cmd.builtin === "model") {
       dispatch({ type: "ui_picker_open", which: "model" });
       if (activeSessionId) ws.send({ type: "list_models", sessionId: activeSessionId } satisfies ClientMessage);
@@ -134,7 +147,9 @@ export default function App() {
     dispatch({ type: "ui_picker_close", which: "session" });
   };
   const handleEntrySelect = (entryId: string) => {
-    if (!ui.treePicker || !activeSessionId) return;
+    if (!ui.treePicker || !activeSessionId || !active) return;
+    // 导航/分叉也触发 session_opened，复用 openingSession 锁定（全局遮罩防乱点）
+    dispatch({ type: "ui_history_opening", cwd: active.cwd, path: "" });
     if (ui.treePicker.mode === "navigate") ws.send({ type: "navigate", sessionId: activeSessionId, targetId: entryId } satisfies ClientMessage);
     else ws.send({ type: "fork", sessionId: activeSessionId, entryId } satisfies ClientMessage);
     dispatch({ type: "ui_picker_close", which: "tree" });
@@ -142,9 +157,9 @@ export default function App() {
 
   return (
     /* 全屏布局根容器（layout 铁律，详见 docs/design/modules/layout.md）：
-       h-screen + overflow-hidden 锁死视口（子内容溢出不撑出页面级滚动条）；
+       h-[100dvh]（移动端 dvh，桌面 lg:h-screen）+ overflow-hidden 锁死视口；
        flex-col 移动端单栏 / lg:flex-row 桌面端侧边栏 + 主区并排 */
-    <div className="flex h-screen overflow-hidden flex-col bg-canvas text-fg lg:flex-row">
+    <div className="flex h-[100dvh] overflow-hidden flex-col bg-canvas text-fg lg:h-screen lg:flex-row">
       <Sidebar
         dirs={dirs}
         recentDirs={recentDirs}
@@ -153,7 +168,6 @@ export default function App() {
         activeSessionId={activeSessionId}
         active={active}
         sidebarOpen={sidebarOpen}
-        onNewSession={newSession}
         onSelectSession={selectSession}
         onCloseSession={closeSession}
         onToggleDir={handleToggle}
@@ -186,7 +200,7 @@ export default function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
       />
-      <FileViewer fileViewer={ui.fileViewer} onClose={() => dispatch({ type: "ui_file_viewer_close" })} />
+      <FileViewer fileViewer={ui.fileViewer} pendingFile={ui.pendingFile} onClose={() => dispatch({ type: "ui_file_viewer_close" })} />
       <ModelPicker open={ui.modelPicker} models={models} onSelect={handleModelSelect} onClose={() => dispatch({ type: "ui_picker_close", which: "model" })} />
       <ThinkingPicker open={ui.thinkingPicker} onSelect={handleThinkingSelect} onClose={() => dispatch({ type: "ui_picker_close", which: "thinking" })} />
       <SessionPicker open={ui.sessionPicker} sessions={historySessions} onSelect={handleHistorySelect} onClose={() => dispatch({ type: "ui_picker_close", which: "session" })} />
@@ -197,6 +211,15 @@ export default function App() {
         onSelect={selectDir}
         onClose={() => dispatch({ type: "ui_dirbrowser_close" })}
       />
+      {/* 会话切换操作全局遮罩（创建/打开/导航/分叉都触发 session_opened，期间锁定防乱点） */}
+      {ui.openingSession && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm">
+          <div className="flex items-center gap-2 rounded-lg bg-surface-elevated px-5 py-3 text-sm text-fg-secondary shadow-xl">
+            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-fg-tertiary border-t-transparent" />
+            正在打开会话…
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -101,6 +101,19 @@ async function main() {
   // 启动时检查是否有重启待恢复（接班进程场景）
   await recoverPendingSession(store);
 
+  // 会话空闲回收（ADR-003）：定期释放无客户端订阅且非运行中的会话，防内存泄漏。
+  // 单进程多会话，不回收则只增不减，长跑必 OOM（曾实测接班进程 11.5 分钟涨满 4GB 崩溃）。
+  // 会话已落盘，回收后用户重连 open_session 从磁盘重新加载，数据不丢。
+  // WC_SESSION_IDLE_MS 可调超时（默认 2h）；设 0 关闭回收。
+  const IDLE_SWEEP_INTERVAL = 5 * 60_000;                              // 每 5 分钟扫描一次
+  const SESSION_IDLE_TIMEOUT = Number(process.env.WC_SESSION_IDLE_MS ?? 2 * 60 * 60_000); // 默认 2h
+  if (SESSION_IDLE_TIMEOUT > 0) {
+    setInterval(() => {
+      const released = store.sweepIdle(SESSION_IDLE_TIMEOUT);
+      if (released > 0) console.log(`[web-console] 空闲回收 ${released} 个会话`);
+    }, IDLE_SWEEP_INTERVAL);
+  }
+
   // listen 加 EADDRINUSE 重试：重启时老进程刚退出、端口释放有短暂窗口。
   // 有限重试（最多 10 次），避免端口被其他进程永久占用时无限循环。
   let listenRetries = 0;

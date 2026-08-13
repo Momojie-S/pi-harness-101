@@ -2,7 +2,7 @@ import type { WebSocket } from "ws";
 import path from "node:path";
 import { readFile, readdir, stat, access } from "node:fs/promises";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { SessionStore } from "./session-store.ts";
+import { SessionStore, type ManagedSession } from "./session-store.ts";
 import type { ClientMessage, EntryTreeNode, ServerMessage } from "./types.ts";
 
 // 不支持预览的二进制文件扩展名（svg/pem/crt 等文本格式不列入）
@@ -35,6 +35,36 @@ function simplifyNode(node: any): EntryTreeNode {
     summary = `[${e.type}]`;
   }
   return { id: e.id, parentId: e.parentId, type: e.type, summary, timestamp: e.timestamp, children: (node.children || []).map(simplifyNode) };
+}
+
+/** 构造 session_opened 消息 + 预取根目录与命令。
+ *  预取省去前端收到 session_opened 后补发的 2 次 WS 往返（list_dir + list_commands）——
+ *  frp 链路抖动下单次往返可能 700ms，预取把「新建/打开/导航/分叉会话」从 3 次往返降到 1 次。 */
+async function buildSessionOpened(store: SessionStore, managed: ManagedSession): Promise<ServerMessage> {
+  const allMsgs = managed.session.messages;
+  const offset = Math.max(0, allMsgs.length - MSG_INITIAL_PAGE);
+  // 预取根目录（等价 list_dir 无 path；失败则空，前端目录树显示加载提示）
+  let dirContent: { name: string; type: "file" | "dir"; path: string }[] = [];
+  try {
+    const dirents = await readdir(managed.cwd, { withFileTypes: true });
+    dirContent = dirents
+      .map((d) => ({ name: d.name, type: d.isDirectory() ? ("dir" as const) : ("file" as const), path: path.join(managed.cwd, d.name) }))
+      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
+  } catch { /* 根目录不可读，留空 */ }
+  return {
+    type: "session_opened",
+    sessionId: managed.sessionId,
+    cwd: managed.cwd,
+    sessionFile: managed.sessionManager.getSessionFile(),
+    messages: allMsgs.slice(offset),
+    messageTotal: allMsgs.length,
+    messageOffset: offset,
+    model: store.getModelInfo(managed.sessionId) ?? { provider: "", id: "", name: "" },
+    contextUsage: store.getContextUsage(managed.sessionId),
+    timing: managed.openTiming,
+    dirContent,
+    commands: store.getCommands(managed.sessionId),
+  };
 }
 
 // cwd 是否在允许的根目录（含子目录）内。roots 为 null/空表示不限制（完全放开，靠网络层认证，见 ADR-009）。
@@ -109,21 +139,7 @@ export function handleConnection(
             subscriptions.set(managed.sessionId, fn);
             store.subscribe(managed.sessionId, fn);
           }
-          // 分页：首屏只返回最近 MSG_INITIAL_PAGE 条（大对话提速）
-          const allMsgs = managed.session.messages;
-          const mOffset = Math.max(0, allMsgs.length - MSG_INITIAL_PAGE);
-          send({
-            type: "session_opened",
-            sessionId: managed.sessionId,
-            cwd: managed.cwd,
-            sessionFile: managed.sessionManager.getSessionFile(),
-            messages: allMsgs.slice(mOffset),
-            messageTotal: allMsgs.length,
-            messageOffset: mOffset,
-            model: store.getModelInfo(managed.sessionId) ?? { provider: "", id: "", name: "" },
-            contextUsage: store.getContextUsage(managed.sessionId),
-            timing: managed.openTiming,
-          });
+          send(await buildSessionOpened(store, managed));
           break;
         }
 
@@ -133,6 +149,9 @@ export function handleConnection(
             store.unsubscribe(msg.sessionId, fn);
             subscriptions.delete(msg.sessionId);
           }
+          // 释放后端会话（ADR-003）。用户关 tab 即意图释放：idle 会话立即 dispose，
+          // streaming 会话让 agent 跑完再由 sweepIdle 回收（design.md 异步执行，不强杀）。
+          store.releaseSession(msg.sessionId);
           send({ type: "session_closed", sessionId: msg.sessionId });
           break;
         }
@@ -140,7 +159,13 @@ export function handleConnection(
         case "prompt": {
           const m = store.get(msg.sessionId);
           if (!m) return send({ type: "error", message: "会话不存在", sessionId: msg.sessionId });
-          await m.session.prompt(msg.message);
+          // agent 工作中时 SDK 的 prompt 会抛 "Agent is already processing"，
+          // 自动降级为 steer（不打断当前工作）。前端 streaming 状态可能和后端不同步（WS 重连等），后端兜底最稳。
+          if (m.session.isStreaming) {
+            await m.session.steer(msg.message);
+          } else {
+            await m.session.prompt(msg.message);
+          }
           break;
         }
         case "steer": {
@@ -264,6 +289,16 @@ export function handleConnection(
           if (m) await m.session.compact();
           break;
         }
+        case "reload_session": {
+          // 重载当前会话的扩展/skills/prompts（保留对话历史）。reload 后刷新命令列表推给前端。
+          try {
+            const commands = await store.reloadSession(msg.sessionId);
+            send({ type: "reloaded", sessionId: msg.sessionId, commands });
+          } catch (err) {
+            send({ type: "error", message: `reload 失败: ${err instanceof Error ? err.message : String(err)}`, sessionId: msg.sessionId });
+          }
+          break;
+        }
         case "set_thinking": {
           const m = store.get(msg.sessionId);
           if (m) { m.session.setThinkingLevel(msg.level as any); send({ type: "thinking_changed", sessionId: msg.sessionId, level: msg.level }); }
@@ -289,10 +324,7 @@ export function handleConnection(
             subscriptions.set(managed.sessionId, fn);
             store.subscribe(managed.sessionId, fn);
           }
-          // 分页：首屏只返回最近 MSG_INITIAL_PAGE 条
-          const histMsgs = managed.session.messages;
-          const hOffset = Math.max(0, histMsgs.length - MSG_INITIAL_PAGE);
-          send({ type: "session_opened", sessionId: managed.sessionId, cwd: managed.cwd, sessionFile: managed.sessionManager.getSessionFile(), messages: histMsgs.slice(hOffset), messageTotal: histMsgs.length, messageOffset: hOffset, model: store.getModelInfo(managed.sessionId) ?? { provider: "", id: "", name: "" }, contextUsage: store.getContextUsage(managed.sessionId), timing: managed.openTiming });
+          send(await buildSessionOpened(store, managed));
           break;
         }
         case "list_entries": {
@@ -305,9 +337,7 @@ export function handleConnection(
           const m = store.get(msg.sessionId);
           if (m) {
             await m.session.navigateTree(msg.targetId);
-            const navMsgs = m.session.messages;
-            const nOffset = Math.max(0, navMsgs.length - MSG_INITIAL_PAGE);
-            send({ type: "session_opened", sessionId: msg.sessionId, cwd: m.cwd, sessionFile: m.sessionManager.getSessionFile(), messages: navMsgs.slice(nOffset), messageTotal: navMsgs.length, messageOffset: nOffset, model: store.getModelInfo(msg.sessionId) ?? { provider: "", id: "", name: "" }, contextUsage: store.getContextUsage(msg.sessionId) });
+            send(await buildSessionOpened(store, m));
           }
           break;
         }
@@ -322,10 +352,7 @@ export function handleConnection(
             subscriptions.set(newManaged.sessionId, fn);
             store.subscribe(newManaged.sessionId, fn);
           }
-          // 分页：首屏只返回最近 MSG_INITIAL_PAGE 条
-          const forkMsgs = newManaged.session.messages;
-          const fOffset = Math.max(0, forkMsgs.length - MSG_INITIAL_PAGE);
-          send({ type: "session_opened", sessionId: newManaged.sessionId, cwd: newManaged.cwd, sessionFile: newManaged.sessionManager.getSessionFile(), messages: forkMsgs.slice(fOffset), messageTotal: forkMsgs.length, messageOffset: fOffset, model: store.getModelInfo(newManaged.sessionId) ?? { provider: "", id: "", name: "" }, contextUsage: store.getContextUsage(newManaged.sessionId), timing: newManaged.openTiming });
+          send(await buildSessionOpened(store, newManaged));
           break;
         }
 

@@ -1,7 +1,8 @@
 // 渲染单条消息（user / assistant / toolResult / system-error）
 // read/edit/write 的文件路径可点击 → 打开文件查看器看完整内容
+import { memo } from "react";
 import type { ChatMessage } from "../types.ts";
-import { Markdown } from "./Markdown.tsx";
+import { LazyMarkdown as Markdown } from "./LazyMarkdown.tsx";
 
 interface Props {
   message: ChatMessage;
@@ -30,13 +31,25 @@ function toBlocks(content: unknown): ContentBlock[] {
   return (Array.isArray(content) ? content : []) as ContentBlock[];
 }
 
-export function MessageView({ message, onOpenFile, patches }: Props) {
+// memo：message/onOpenFile/patches 引用不变时跳过重渲染。消息对象在 reducer 里保持引用稳定
+//（message_end 用展开运算符 [...messages, new] 保留旧引用），onOpenFile 由 App useCallback 稳定，
+// patches 仅 edit/write 工具结果时变。这是消除「540+ 条消息每次 reducer 更新都重新 markdown 解析」的关键。
+export const MessageView = memo(function MessageView({ message, onOpenFile, patches }: Props) {
   // 系统错误消息：红色提示，按时间顺序在消息流中显示（和 TUI 一致）
   if (message.role === "system-error") {
     return (
       <div className="rounded-lg border border-danger bg-danger-soft p-3 text-sm text-danger">
         <span className="font-medium">✗ 错误</span>
         <p className="mt-1 whitespace-pre-wrap break-words">{message.content}</p>
+      </div>
+    );
+  }
+
+  // 系统提示消息：成功/信息反馈（绿色，对称于 system-error），进消息流显示
+  if (message.role === "system-notice") {
+    return (
+      <div className="rounded-lg border border-ok bg-ok-soft p-3 text-sm text-ok">
+        <span className="font-medium">✓ {message.content}</span>
       </div>
     );
   }
@@ -123,4 +136,4 @@ export function MessageView({ message, onOpenFile, patches }: Props) {
       })}
     </div>
   );
-}
+});

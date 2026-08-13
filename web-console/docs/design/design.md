@@ -104,7 +104,7 @@ Web Console 是**独立 Node 应用**，不在这条加载链路上：它反过�
 |--------|------|------|
 | 监听端口 | Web 服务端口 | `3000` |
 | 工作目录白名单 | 允许通过 Web 操作的目录（安全：避免暴露任意目录） | 启动时指定 |
-| 会话空闲回收 | 长时间不活跃的 AgentSession 是否 `dispose()` 释放内存 | 可配（会话已落盘，回收不影响恢复） |
+| 会话空闲回收 | 无客户端订阅且非运行中的会话超过阈值后 `dispose()` 释放内存（ADR-003）。关闭 tab 立即释放；长期空闲（默认 2h）自动回收。会话已落盘，回收后重连从磁盘恢复，数据不丢 | 默认 2h，`WC_SESSION_IDLE_MS` 可调，设 0 关闭 |
 
 ### 外网访问
 
@@ -125,20 +125,24 @@ Web Console 是**独立 Node 应用**，不在这条加载链路上：它反过�
 | 转向 / 跟进 / abort | steering / follow_up / 停止 | ✅ |
 | 目录树浏览 | 工作目录文件树，懒加载展开 | ✅ |
 | 目录浏览选择 | 侧边栏 📁 跨盘浏览选目录；选定后内联显示该目录历史会话列表（滚动分页），可恢复或新建（`list_sessions`+`open_history`，[ADR-009](adr/009-frontend-cwd-selection.md)） | ✅ |
-| 文件查看 | 点击查看，二进制三层过滤拒绝（ADR-005） | ✅ |
+| 文件查看 | 点击查看，二进制三层过滤拒绝（ADR-005）；markdown 类（.md/.markdown/.mdx）按格式渲染，代码文件按语言语法高亮，其余纯文本（ADR-013 / ADR-014） | ✅ |
 | /command | 完整：skills/prompts/extension + model/compact/thinking/resume/tree/fork（ADR-006） | ✅ |
 | 断线重连 | 自动重连 + 恢复所有会话订阅 | ✅ |
 | 多端响应式 | 桌面三栏 / 手机单栏（safe-area / 触摸目标 / 抽屉动画见 [design-system.md §8](modules/design-system.md)） | ✅ |
 | 全屏布局 | flex 三层结构 + 视口锁死 + 限宽居中（[modules/layout.md](modules/layout.md)、[ADR-011](adr/011-content-maxwidth-center.md)） | ✅ |
 | 主题切换 | 亮/暗双主题，跟随系统 + 手动切换（[ADR-010](adr/010-frontend-theme-system.md)） | ✅ |
 | extension 命令 | 扩展注册的 /cmd（runtime.getCommands） | ✅ |
+| 扩展 UIContext 桥接 | ctx.ui.notify 转发到前端（system-notice/error）；其余 no-op 待支持（[modules/extension-ui.md](modules/extension-ui.md)） | ✅ notify |
+| /reload | 重载当前会话的扩展/skills/prompts（保留对话，调 AgentSession.reload）；前端 / 补全 + 完成反馈 | ✅ |
 | 状态栏 | 当前模型 + context 占用百分比/进度条（[modules/status-bar.md](modules/status-bar.md)） | ✅ |
 | 会话列表分组 | 打开的会话按目录分组 + 显示首条消息简述（`sessionUtils.getSummary`/`groupByCwd`） | ✅ |
 | 历史会话恢复 | 点击恢复历史会话；已打开的直接切换不重复加载；loading + 防重复点击 | ✅ |
+| 会话生命周期 | 关闭 tab 即 `dispose()` 释放后端会话（SDK 资源 + GC）；长期无客户端的非运行中会话定时自动回收（ADR-003，防单进程多会话 OOM） | ✅ |
 | Compact 反馈 | /compact 触发后显示旋转加载提示（基于 SDK 的 `compaction_start`/`compaction_end` event） | ✅ |
 | Markdown 渲染 | assistant 输出按 markdown 渲染（代码块/标题/列表/表格/行内代码），react-markdown + remark-gfm（[ADR-013](adr/013-markdown-rendering.md)） | ✅ |
 | Steer 补充 | agent 工作中可发补充消息（不打断当前工作；输入框自动切换为「补充」模式，走后端 `steer` WS） | ✅ |
 | 消息分页加载 | 首屏 50 条 + 向上滚动加载更早（避免大对话全量传输，[ADR-012](adr/012-message-pagination.md)） | ✅ |
+| 首屏代码分割 | Markdown/highlight.js 拆 lazy chunk 按需加载，首屏 gzip 164KB→59KB（[ADR-015](adr/015-code-splitting-vs-cdn.md)） | ✅ |
 | 服务自重启 | agent 触发重启（spawn 接班 + 补 toolResult + agent 继续）（[modules/restart.md](modules/restart.md)） | ✅ |
 
 ## 已知限制
@@ -152,7 +156,7 @@ Web Console 是**独立 Node 应用**，不在这条加载链路上：它反过�
 
 > 以下为已规划、暂未执行的工作（2025-01 暂存，优先做阿里云部署）。
 
-- **补分模块设计文档**：`modules/` 下补充 `ws-protocol.md`（WS 消息契约）、`session-management.md`（会话管理）、`command-system.md`（/command 分流）、`tool-rendering.md`（工具结果渲染）
+- ~~**补分模块设计文档**~~：✅ `ws-protocol.md`（WS 通信与前端性能方法论）已完成；`session-management.md`（会话管理）、`command-system.md`（/command 分流）、`tool-rendering.md`（工具结果渲染）仍待补
 - **前端重构**：按 `modules/frontend-architecture.md` 拆分 `App.tsx`（`useReducer` 消除 ref 镜像 + 拆组件 + 类型贯穿），5 步有序小步
 - ~~**前端主题系统落地**~~：✅ 已完成（亮/暗双主题 + Linear 风视觉 + 移动端专项，见 [ADR-010](adr/010-frontend-theme-system.md) + [modules/design-system.md](modules/design-system.md)）
 - ~~**前端布局文档**~~：✅ 已完成（全屏 flex 结构 + 三条铁律 + 限宽居中取舍，见 [modules/layout.md](modules/layout.md) + [ADR-011](adr/011-content-maxwidth-center.md)）

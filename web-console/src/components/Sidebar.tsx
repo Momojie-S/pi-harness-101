@@ -1,7 +1,6 @@
 // 侧边栏（重构 Step 5）：工作目录 + 会话列表 + 目录树 + 主题切换
 // PC（lg+）：inline 侧边栏（hidden lg:block）
 // 移动端：overlay 抽屉（sidebarOpen 控制，lg:hidden）
-import { useState } from "react";
 import { FileTree } from "./FileTree.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 import { getSummary, groupByCwd } from "../lib/sessionUtils.ts";
@@ -16,7 +15,6 @@ interface SidebarProps {
   activeSessionId: string | null;
   active: SessionState | null;
   sidebarOpen: boolean;
-  onNewSession: (cwd: string) => void;
   onSelectSession: (sid: string) => void;
   onCloseSession: (sid: string) => void;
   onToggleDir: (dir: string) => void;
@@ -33,24 +31,13 @@ interface SidebarProps {
   onToggleTheme: () => void;
 }
 
-function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, onNewSession, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, theme, onToggleTheme }: Omit<SidebarProps, "sidebarOpen" | "onCloseSidebar">) {
-  const [input, setInput] = useState("");
+function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, theme, onToggleTheme }: Omit<SidebarProps, "sidebarOpen" | "onCloseSidebar">) {
   return (
     <>
       <h2 className="mb-2 text-sm font-semibold text-fg-secondary">工作目录</h2>
-      <form
-        onSubmit={(e) => { e.preventDefault(); onNewSession(input); setInput(""); }}
-        className="mb-2 flex gap-1"
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="粘贴目录路径…"
-          className="min-w-0 flex-1 rounded border-strong bg-surface px-2 py-1 text-xs text-fg placeholder-fg-tertiary focus:border-strong focus:outline-none"
-        />
-        <button type="button" onClick={onOpenDirBrowser} className="shrink-0 rounded border border-strong bg-surface px-2 py-1 text-xs text-fg hover:bg-surface-2" title="浏览选择目录" aria-label="浏览目录">📁</button>
-        <button type="submit" className="shrink-0 rounded bg-accent px-2 py-1 text-xs text-accent-contrast hover:bg-accent-hover" title="在该目录新建会话">＋</button>
-      </form>
+      <button onClick={onOpenDirBrowser} className="mb-2 flex w-full items-center gap-1.5 rounded-md border border-strong bg-surface px-2 py-1.5 text-xs text-fg-secondary hover:bg-surface-2">
+        📁 选择目录
+      </button>
       <div className="space-y-1">
         {dirs.map((d) => {
           const name = d.split(/[\\/]/).pop() ?? d;
@@ -74,7 +61,7 @@ function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessio
           </>
         )}
         {dirs.length === 0 && recentDirs.length === 0 && (
-          <p className="text-xs text-fg-tertiary">粘贴路径，或先在后端设 ALLOWED_DIRS</p>
+          <p className="text-xs text-fg-tertiary">点击上方选择目录</p>
         )}
       </div>
 
@@ -84,8 +71,8 @@ function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessio
             <span className="truncate">{dirSessions.cwd.split(/[\\/]/).pop() ?? dirSessions.cwd}</span>
             <span className="font-normal text-fg-tertiary">的对话</span>
           </h2>
-          <button onClick={onNewSessionInDir} className="mb-1 block w-full rounded-md bg-accent/10 px-2 py-1.5 text-left text-xs font-medium text-accent hover:bg-accent/20">
-            ＋ 新建会话
+          <button onClick={onNewSessionInDir} disabled={!!openingSession} className={`mb-1 block w-full rounded-md px-2 py-1.5 text-left text-xs font-medium ${openingSession && !openingSession.path ? "cursor-wait bg-accent/5 text-fg-tertiary" : "bg-accent/10 text-accent hover:bg-accent/20"}`}>
+            {openingSession && !openingSession.path ? "⏳ 创建中…" : "＋ 新建会话"}
           </button>
           {dirSessions.loading ? (
             <p className="px-2 py-3 text-xs text-fg-tertiary">加载中…</p>
@@ -128,7 +115,7 @@ function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessio
         <div className="mt-4">
           <h2 className="mb-2 text-sm font-semibold text-fg-secondary">{dirSessions ? "打开的会话" : "会话"}</h2>
           {sessionOrder.length === 0 ? (
-            <p className="text-xs text-fg-tertiary">点击上方目录新建</p>
+            <p className="text-xs text-fg-tertiary">点击上方选择目录</p>
           ) : (
             <div className="space-y-3">
               {/* 多目录按 cwd 分组（sessionUtils.groupByCwd）：组标题 = 目录名 + 数量，组内会话显示简述（首条用户消息） */}
@@ -142,7 +129,7 @@ function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessio
                   <div className="space-y-0.5">
                     {g.sessionIds.map((sid) => {
                       const s = sessions[sid];
-                      const summary = s ? getSummary(s.messages) : "";
+                      const summary = s ? (getSummary(s.messages) || s.summary || "") : "";
                       const isActive = sid === activeSessionId;
                       return (
                         <div key={sid} className={`flex items-center rounded-md px-2 py-1.5 text-xs ${isActive ? "bg-surface-2 text-fg" : "text-fg-secondary hover:bg-surface-2"}`}>
@@ -178,8 +165,8 @@ function SidebarContent({ dirs, recentDirs, sessions, sessionOrder, activeSessio
   );
 }
 
-export function Sidebar({ dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, sidebarOpen, onNewSession, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, onCloseSidebar, theme, onToggleTheme }: SidebarProps) {
-  const contentProps = { dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, onNewSession, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, theme, onToggleTheme };
+export function Sidebar({ dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, sidebarOpen, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, onCloseSidebar, theme, onToggleTheme }: SidebarProps) {
+  const contentProps = { dirs, recentDirs, sessions, sessionOrder, activeSessionId, active, onSelectSession, onCloseSession, onToggleDir, onLoadDirSessions, onOpenFile, onOpenDirBrowser, dirSessions, onLoadMoreDirSessions, onSelectHistoryInDir, onNewSessionInDir, openingSession, theme, onToggleTheme };
 
   return (
     <>
@@ -189,7 +176,7 @@ export function Sidebar({ dirs, recentDirs, sessions, sessionOrder, activeSessio
       </aside>
 
       {/* 移动端：overlay 抽屉（始终在 DOM，translate/opacity 控制显隐 + 过渡动画） */}
-      <div className="fixed inset-0 z-50 lg:hidden" aria-hidden={!sidebarOpen}>
+      <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? "" : "pointer-events-none"}`} aria-hidden={!sidebarOpen}>
         <div
           className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${sidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
           onClick={onCloseSidebar}

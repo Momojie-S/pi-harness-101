@@ -16,18 +16,25 @@ export interface SystemErrorMessage {
   timestamp: number;
 }
 
+/** 系统提示消息（成功/信息反馈，对称于 system-error）。进消息流，按时间顺序显示。 */
+export interface SystemNoticeMessage {
+  role: "system-notice";
+  content: string;
+  timestamp: number;
+}
+
 /** 前端消息列表项（SDK 真实消息 + 前端系统消息） */
-export type ChatMessage = AgentMessage | SystemErrorMessage;
+export type ChatMessage = AgentMessage | SystemErrorMessage | SystemNoticeMessage;
 export type { ModelIdentity, ContextUsagePayload };
 
 // —— 前端专用类型（视图模型 / 前端状态）——
 
-/** 工具执行卡片（前端视图模型，status 是前端态） */
+/** 工具执行卡片（前端视图模型，status 是前端态）。
+ *  注：流式 output 不在此处——它在 streamStore（ADR-017），用 useToolOutput 订阅。 */
 export interface ToolInfo {
   name: string;
   args: unknown;
   status: "running" | "done" | "error";
-  output: string;
 }
 
 /** 目录条目（与 server/types.ts 的 dir_content.entries 结构一致） */
@@ -72,7 +79,7 @@ export interface SessionState {
   /** 当前已加载最早消息在完整列表的索引（分页；0 表示已加载全部历史） */
   messageOffset: number;
   messages: ChatMessage[];
-  streamText: string;
+  // streamText 已移至 streamStore（ADR-017），用 useStreamText(sessionId) 订阅
   streaming: boolean;
   tools: Record<string, ToolInfo>;
   patches: Record<string, string>;
@@ -89,6 +96,10 @@ export interface SessionState {
   model: ModelIdentity | null;
   /** Context 占用（agent_settled 后后端推送） */
   contextUsage: ContextUsagePayload | null;
+  /** 扩展状态（ctx.ui.setStatus 转发，key → text；undefined = 清除） */
+  extensionStatuses: Record<string, string>;
   /** 刷新后从后端恢复的 session（messages 未加载，点击时 open_session 加载） */
   restored: boolean;
+  /** 刷新恢复占位摘要（sessions_active 带回；messages 加载后改用 getSummary 计算） */
+  summary?: string;
 }

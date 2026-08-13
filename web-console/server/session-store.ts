@@ -11,6 +11,20 @@ import { Type } from "typebox";
 import type { ContextUsagePayload, ModelIdentity, ServerMessage } from "./types.ts";
 import { spawnReplacement, tryTriggerRestart, writePending } from "./restart.ts";
 
+/** 从消息列表提取摘要（首条 user 文本）。与前端 getSummary 同口径——
+ *  刷新恢复时 sessions_active 带回，让侧边栏立即显示摘要而不用等 messages 加载。 */
+function extractSummary(messages: readonly { role: string; content?: unknown }[]): string {
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const c = m.content;
+    if (c == null) continue;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => b?.text ?? "").join("") : "";
+    const trimmed = text.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
 // 一个 pi 会话（按 sessionId 管理，支持同目录多会话并发）
 export interface ManagedSession {
   session: AgentSession;
@@ -20,8 +34,15 @@ export interface ManagedSession {
   // 可用的斜杠命令（skills + prompts），供前端 / 自动补全
   commands: { name: string; description?: string }[];
   subscribers: Set<(msg: ServerMessage) => void>;
+  /** session_start 期间的 notify 缓冲：此时 subscribers 可能还为空（客户端未重连），
+   *  notify 先存这里，客户端订阅时 flush（见 subscribe 方法）。 */
+  pendingNotices: ServerMessage[];
   /** 打开会话各阶段耗时（诊断用） */
   openTiming?: { loaderMs: number; createMs: number; totalMs: number };
+  /** 最后一个订阅者断开的时刻（null = 当前有订阅者）。
+   *  sweepIdle 据此回收长期无客户端的会话（ADR-003 空闲回收，防内存泄漏）。
+   *  创建时设为 Date.now()（尚未订阅即开始计时），首个订阅者到达时清 null。 */
+  idleSince: number | null;
 }
 
 // 管理所有活跃会话。设计依据见 docs/design/adr/003（单进程多会话）。
@@ -63,7 +84,7 @@ export class SessionStore {
       .getCommands()
       .map((c: any) => ({ name: c.name, description: c.description }));
 
-    const managed: ManagedSession = { session, sessionManager, cwd, sessionId: session.sessionId, commands, subscribers: new Set(), openTiming: { loaderMs: Math.round(t1 - t0), createMs: Math.round(t2 - t1), totalMs: Math.round(t2 - t0) } };
+    const managed: ManagedSession = { session, sessionManager, cwd, sessionId: session.sessionId, commands, subscribers: new Set(), pendingNotices: [], openTiming: { loaderMs: Math.round(t1 - t0), createMs: Math.round(t2 - t1), totalMs: Math.round(t2 - t0) }, idleSince: Date.now() };
     // 订阅事件，广播给所有订阅者（事件带 sessionId，前端按此路由）
     session.subscribe((event) => {
       const msg: ServerMessage = { type: "agent_event", sessionId: managed.sessionId, event };
@@ -83,6 +104,43 @@ export class SessionStore {
         }
       }
     });
+    // web-console 注入 UIContext：让扩展的 ctx.ui.notify 能转发到前端（默认 noOpUIContext 下 hasUI=false，
+    // 所有扩展的 notify 都走 console.log 用户看不到）。这里注入最小 UIContext：notify → 广播 ui_notify 消息；
+    // 其余方法 no-op（后续按需支持 select/confirm/setStatus/setWidget 等，见 docs/design/modules/extension-ui.md）。
+    // mode 设为 "rpc"（非 tui，扩展用它守护终端专用 UI）。
+    const broadcast = (msg: ServerMessage) => {
+      for (const sub of managed.subscribers) {
+        try { sub(msg); } catch { /* 单个订阅者失败不影响其他 */ }
+      }
+    };
+    const webConsoleUIContext = {
+      notify: (message: string, level: "info" | "warning" | "error" = "info") => {
+        const msg: ServerMessage = { type: "ui_notify", sessionId: managed.sessionId, message, level };
+        if (managed.subscribers.size === 0) {
+          managed.pendingNotices.push(msg);
+        } else {
+          broadcast(msg);
+        }
+      },
+      // 以下暂为 no-op（后续按需实现，见 extension-ui.md）
+      select: async () => undefined,
+      confirm: async () => false,
+      input: async () => undefined,
+      onTerminalInput: () => () => {},
+      setStatus: (key: string, text: string | undefined) => {
+        broadcast({ type: "ui_set_status", sessionId: managed.sessionId, key, text: text ?? undefined });
+      },
+      setWorkingMessage: () => {},
+      setWorkingVisible: () => {},
+      setWorkingIndicator: () => {},
+      setHiddenThinkingLabel: () => {},
+      setWidget: () => {},
+      custom: async () => undefined,
+      editor: async () => undefined,
+      setEditorText: () => {},
+    };
+    await session.bindExtensions({ uiContext: webConsoleUIContext as any, mode: "rpc" });
+
     this.sessions.set(managed.sessionId, managed);
     return managed;
   }
@@ -133,6 +191,22 @@ export class SessionStore {
     return this.sessions.get(sessionId)?.commands ?? [];
   }
 
+  /** 重载会话的扩展/skills/prompts（保留对话历史，只换 runtime）。
+   *  pi 的 AgentSession.reload() 重读 settings + resourceLoader、重建 runtime、触发 session_start。
+   *  reload 后命令列表会变（新扩展的命令），重新拉取并更新 ManagedSession。 */
+  async reloadSession(sessionId: string): Promise<{ name: string; description?: string }[]> {
+    const m = this.sessions.get(sessionId);
+    if (!m) return [];
+    await m.session.reload();
+    // reload 重建了 _extensionRunner，重新拉取命令列表
+    //（_extensionRunner 是 TS private，JS 可访问；getCommands 是 ExtensionRunner 的方法）
+    const runner = (m.session as any)._extensionRunner;
+    if (runner?.getCommands) {
+      m.commands = runner.getCommands().map((c: any) => ({ name: c.name, description: c.description }));
+    }
+    return m.commands;
+  }
+
   async listModels(): Promise<{ provider: string; id: string; name: string }[]> {
     const models = await this.modelRuntime.getAvailable();
     return models.map((m) => ({ provider: m.provider, id: m.id, name: m.name }));
@@ -162,21 +236,91 @@ export class SessionStore {
   }
 
   subscribe(sessionId: string, fn: (msg: ServerMessage) => void) {
-    this.sessions.get(sessionId)?.subscribers.add(fn);
+    const m = this.sessions.get(sessionId);
+    if (!m) return;
+    m.subscribers.add(fn);
+    m.idleSince = null; // 有订阅者，取消空闲计时
+    // flush session_start 期间缓冲的 notify（客户端刚连上）
+    if (m.pendingNotices.length > 0) {
+      for (const msg of m.pendingNotices) {
+        try { fn(msg); } catch {}
+      }
+      m.pendingNotices = [];
+    }
   }
 
   unsubscribe(sessionId: string, fn: (msg: ServerMessage) => void) {
-    this.sessions.get(sessionId)?.subscribers.delete(fn);
+    const m = this.sessions.get(sessionId);
+    if (!m) return;
+    m.subscribers.delete(fn);
+    // 最后一个订阅者断开后开始计空闲（sweepIdle 据此回收长期无客户端的会话，防内存泄漏）
+    if (m.subscribers.size === 0) m.idleSince = Date.now();
+  }
+
+  /** 移除并释放会话（内部方法，由 releaseSession / sweepIdle 调用）。dispose 释放 SDK 资源（eventListeners、
+   *  agent subscribe、extensionRunner、abort controllers），再从 Map 删除让它可被 GC。
+   *  调用方须确保会话非 streaming（强 dispose 会 abort 正在跑的 agent）。 */
+  removeSession(sessionId: string): void {
+    const m = this.sessions.get(sessionId);
+    if (!m) return;
+    try {
+      m.session.dispose();
+    } catch (e) {
+      console.error(`[web-console] dispose 会话 ${sessionId.slice(-8)} 失败:`, e instanceof Error ? e.message : e);
+    }
+    this.sessions.delete(sessionId);
+  }
+
+  /** 释放会话（用户关闭 tab 触发）：idle 会话立即 dispose；streaming 会话让 agent 跑完再由
+   *  sweepIdle 回收。design.md 核心机制「异步执行」：agent 独立执行不依赖客户端连接，
+   *  关 tab 不应终止正在进行的 agent 工作（强 dispose 会 abort + 丢工作）。 */
+  releaseSession(sessionId: string): void {
+    const m = this.sessions.get(sessionId);
+    if (!m) return;
+    if (m.session.isStreaming) return; // agent 运行中：不回收，idle 计时已由 unsubscribe 设置，跑完后 sweep 回收
+    this.removeSession(sessionId);    // idle：立即释放
+  }
+
+  /** 空闲回收（ADR-003）：释放「无订阅者 + 非运行中 + 超过 idleMs」的会话。返回回收数量。
+   *  不回收正在 streaming 的会话（agent 在跑，强回收会丢工作）。
+   *  会话已落盘（jsonl），回收后用户重连 open_session 从磁盘重新加载，数据不丢。 */
+  sweepIdle(idleMs: number): number {
+    const now = Date.now();
+    let released = 0;
+    for (const [sid, m] of this.sessions) {
+      if (m.idleSince === null) continue;       // 当前有客户端连着，不回收
+      if (m.session.isStreaming) continue;        // agent 运行中，不回收
+      if (now - m.idleSince < idleMs) continue;   // 还没到空闲阈值
+      try {
+        m.session.dispose();
+      } catch (e) {
+        console.error(`[web-console] sweepIdle dispose ${sid.slice(-8)} 失败:`, e instanceof Error ? e.message : e);
+      }
+      this.sessions.delete(sid);
+      released++;
+      console.log(`[web-console] 空闲回收会话 ${sid.slice(-8)}（cwd ${m.cwd}，空闲 ${Math.round((now - m.idleSince!) / 60000)}min）`);
+    }
+    return released;
   }
 
   /** 列出所有活跃 session（供 WS 重连恢复） */
-  listActive(): { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] {
-    return Array.from(this.sessions.values()).map((m) => ({
-      sessionId: m.sessionId,
-      cwd: m.cwd,
-      sessionFile: m.sessionManager.getSessionFile(),
-      streaming: m.session.isStreaming,
-    }));
+  listActive(): { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean; summary: string; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity | null }[] {
+    return Array.from(this.sessions.values()).map((m) => {
+      const allMsgs = m.session.messages;
+      const offset = Math.max(0, allMsgs.length - 10); // sessions_active 只带最近 10 条（给所有会话，条数多了首屏传输慢）；完整 50 条由 session_opened 后台补
+      return {
+        sessionId: m.sessionId,
+        cwd: m.cwd,
+        sessionFile: m.sessionManager.getSessionFile(),
+        streaming: m.session.isStreaming,
+        summary: extractSummary(allMsgs),
+        // 带回首屏 messages：前端切换会话即时显示，不用等 open_session 往返（frp 抖动下多个 session_opened 串行是「加载不出来」的根因）
+        messages: allMsgs.slice(offset),
+        messageTotal: allMsgs.length,
+        messageOffset: offset,
+        model: this.getModelInfo(m.sessionId),
+      };
+    });
   }
 
   /**

@@ -1,7 +1,7 @@
 // 会话状态 reducer（重构 Step 2a）。
 // 纯函数：所有跨组件状态变更的唯一入口。副作用（WS send、setTimeout）不在此。
 // 设计依据：docs/design/modules/frontend-architecture.md §4。
-import type { AgentMessage, AgentSessionEvent, CommandInfo, ContextUsagePayload, DirEntry, ModelIdentity, ModelInfo, SessionInfo, SystemErrorMessage } from "../types.ts";
+import type { AgentMessage, AgentSessionEvent, ChatMessage, CommandInfo, ContextUsagePayload, DirEntry, ModelIdentity, ModelInfo, SessionInfo, SystemErrorMessage, SystemNoticeMessage } from "../types.ts";
 import type { EntryTreeNode } from "../../server/types.ts";
 import type { SessionState } from "../types.ts";
 
@@ -21,6 +21,8 @@ export interface AppState {
     dirBrowser: { path: string; parent: string | null; dirs: { name: string; path: string }[] } | null;
     /** 正在打开的历史会话（防重复点击 + loading 反馈；session_opened/error 时清空） */
     openingSession: { cwd: string; path: string } | null;
+    /** 正在加载的文件路径（read_file pending，loading 反馈 + 防重复） */
+    pendingFile: string | null;
   };
   globalError: string | null;
   /** 服务正在重启（收到 restarting 消息后置 true，重连后清零） */
@@ -35,7 +37,7 @@ export interface AppState {
 const DIR_SESSIONS_PAGE = 20;
 
 export function newSessionState(cwd: string): SessionState {
-  return { cwd, sessionFile: undefined, messageTotal: 0, messageOffset: 0, messages: [], streamText: "", streaming: false, compacting: false, retrying: false, steeringQueue: [], restored: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), commands: [], model: null, contextUsage: null };
+  return { cwd, sessionFile: undefined, messageTotal: 0, messageOffset: 0, messages: [], streaming: false, compacting: false, retrying: false, steeringQueue: [], restored: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), commands: [], model: null, contextUsage: null, extensionStatuses: {} };
 }
 
 export const initialState: AppState = {
@@ -53,6 +55,7 @@ export const initialState: AppState = {
     treePicker: null,
     dirBrowser: null,
     openingSession: null,
+    pendingFile: null,
   },
   globalError: null,
   restarting: false,
@@ -77,7 +80,7 @@ function updateSessionInState(
 export type Action =
   // —— onServer ——
   | { type: "dirs"; dirs: string[] }
-  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: AgentMessage[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null }
+  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: AgentMessage[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null; dirContent: DirEntry[]; commands: CommandInfo[] }
   | { type: "session_closed"; sessionId: string }
   | { type: "file_content"; path: string; content: string }
   | { type: "dir_content"; sessionId: string; path: string; entries: DirEntry[] }
@@ -87,7 +90,9 @@ export type Action =
   | { type: "entries_tree"; tree: EntryTreeNode[]; leafId: string | null }
   | { type: "model_changed"; sessionId: string; model: ModelIdentity }
   | { type: "context_usage"; sessionId: string; usage: ContextUsagePayload }
+  | { type: "set_extension_status"; sessionId: string; key: string; text: string | undefined }
   | { type: "error"; message: string; sessionId?: string }
+  | { type: "system_notice"; sessionId: string; content: string }
   | { type: "clear_global_error" }
   | { type: "set_restarting"; restarting: boolean }
   // —— onAgentEvent（合并为单一 action，内 switch event.type）——
@@ -114,8 +119,10 @@ export type Action =
   | { type: "dir_sessions_clear" }
   // —— 正在打开历史会话（loading + 防重复点击）——
   | { type: "ui_history_opening"; cwd: string; path: string }
+  // —— 正在加载文件（read_file pending，loading 反馈 + 防重复）——
+  | { type: "file_loading"; path: string }
   // —— 刷新恢复：后端发送活跃 session 列表 ——
-  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] }
+  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean; summary: string; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity | null }[] }
   // —— 分页：更早的历史消息片段到达 ——
   | { type: "earlier_messages"; sessionId: string; messages: AgentMessage[]; offset: number };
 
@@ -127,9 +134,10 @@ export function sessionReducer(state: AppState, action: Action): AppState {
     case "session_opened": {
       const existing = state.sessions[action.sessionId];
       const isNew = !existing;
+      // 后端预取了根目录 + 命令（省 2 次 WS 往返），直接填入 dirContents / commands
       const session = existing
-        ? { ...existing, cwd: action.cwd, sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, streaming: false, streamText: "", tools: {}, restored: false }
-        : { ...newSessionState(action.cwd), sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage };
+        ? { ...existing, cwd: action.cwd, sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, dirContents: { [action.cwd]: action.dirContent }, commands: action.commands, extensionStatuses: {}, streaming: false, tools: {}, restored: false }
+        : { ...newSessionState(action.cwd), sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, dirContents: { [action.cwd]: action.dirContent }, commands: action.commands };
       return {
         ...state,
         sessions: { ...state.sessions, [action.sessionId]: session },
@@ -152,8 +160,12 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       };
     }
 
+    case "file_loading":
+      // 同时设 fileViewer（Modal 立即弹出）+ pendingFile（标记 loading）。content 空，file_content 到达后填充。
+      return { ...state, ui: { ...state.ui, fileViewer: { path: action.path, content: "" }, pendingFile: action.path } };
+
     case "file_content":
-      return { ...state, ui: { ...state.ui, fileViewer: { path: action.path, content: action.content } } };
+      return { ...state, ui: { ...state.ui, fileViewer: { path: action.path, content: action.content }, pendingFile: null } };
 
     case "dir_content":
       return updateSessionInState(state, action.sessionId, (s) => ({
@@ -192,7 +204,8 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       const newOrder = [...state.sessionOrder];
       for (const info of action.sessions) {
         if (!newSessions[info.sessionId]) {
-          newSessions[info.sessionId] = { ...newSessionState(info.cwd), sessionFile: info.sessionFile, streaming: info.streaming, restored: true };
+          // sessions_active 直接带首屏 messages——切换会话即时显示，不用等 open_session 往返（frp 抖动根因）
+          newSessions[info.sessionId] = { ...newSessionState(info.cwd), sessionFile: info.sessionFile, streaming: info.streaming, summary: info.summary, messages: info.messages as ChatMessage[], messageTotal: info.messageTotal, messageOffset: info.messageOffset, model: info.model };
         }
         if (!newOrder.includes(info.sessionId)) newOrder.push(info.sessionId);
       }
@@ -214,16 +227,26 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       if (state.ui.treePicker === null) return state;
       return { ...state, ui: { ...state.ui, treePicker: { ...state.ui.treePicker, tree: action.tree, leafId: action.leafId } } };
 
-    case "error":
+    case "error": {
+      // error 作为消息按时间顺序插入消息流（和 TUI 一致：能看出什么时候出的问题）
+      const errMsg: SystemErrorMessage = { role: "system-error", content: action.message, timestamp: Date.now() };
+      // 同时清除 pendingFile（read_file 失败时不要残留 loading 状态）
+      const base = { ...state, ui: { ...state.ui, pendingFile: null } };
       if (action.sessionId) {
-        // error 作为消息按时间顺序插入消息流（和 TUI 一致：能看出什么时候出的问题）
-        const errMsg: SystemErrorMessage = { role: "system-error", content: action.message, timestamp: Date.now() };
-        return updateSessionInState(state, action.sessionId, (s) => ({ ...s, messages: [...s.messages, errMsg] }));
+        return updateSessionInState(base, action.sessionId, (s) => ({ ...s, messages: [...s.messages, errMsg] }));
       }
-      return { ...state, globalError: action.message, ui: { ...state.ui, openingSession: null } };
+      return { ...base, globalError: action.message, ui: { ...base.ui, openingSession: null } };
+    }
 
     case "clear_global_error":
       return { ...state, globalError: null };
+
+    case "system_notice":
+      // 成功/信息反馈，作为消息按时间顺序插入消息流（对称于 error）
+      return updateSessionInState(state, action.sessionId, (s) => {
+        const notice: SystemNoticeMessage = { role: "system-notice", content: action.content, timestamp: Date.now() };
+        return { ...s, messages: [...s.messages, notice] };
+      });
 
     case "set_restarting":
       return { ...state, restarting: action.restarting };
@@ -233,6 +256,18 @@ export function sessionReducer(state: AppState, action: Action): AppState {
 
     case "context_usage":
       return updateSessionInState(state, action.sessionId, (s) => ({ ...s, contextUsage: action.usage }));
+
+    case "set_extension_status":
+      // 扩展状态：text=undefined 清除该 key，否则设置
+      return updateSessionInState(state, action.sessionId, (s) => {
+        const statuses = { ...s.extensionStatuses };
+        if (action.text === undefined) {
+          delete statuses[action.key];
+        } else {
+          statuses[action.key] = action.text;
+        }
+        return { ...s, extensionStatuses: statuses };
+      });
 
     case "set_active":
       return { ...state, activeSessionId: action.sessionId, sidebarOpen: false };
@@ -309,7 +344,18 @@ function reduceAgentEvent(state: AppState, sid: string, event: AgentSessionEvent
 
     case "auto_retry_start":
       // 大模型限流/API 错误时 SDK 自动重试；显示「重试中」提示
-      return updateSessionInState(state, sid, (s) => ({ ...s, retrying: true }));
+      // pi 从 agent state 移除了错误消息并重试，前端同步移除（否则错误幽灵消息残留）
+      return updateSessionInState(state, sid, (s) => {
+        const msgs = [...s.messages];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i] as any;
+          if (m.role === "assistant" && m.stopReason === "error") {
+            msgs.splice(i, 1);
+            break;
+          }
+        }
+        return { ...s, retrying: true, messages: msgs };
+      });
 
     case "auto_retry_end": {
       // 重试结束：成功则清除提示；失败则追加 error 到消息流时间线
@@ -322,34 +368,24 @@ function reduceAgentEvent(state: AppState, sid: string, event: AgentSessionEvent
       // steer 队列状态（agent 投递后自动清空）
       return updateSessionInState(state, sid, (s) => ({ ...s, steeringQueue: [...event.steering] }));
 
-    case "message_start":
-      return updateSessionInState(state, sid, (s) => ({ ...s, streamText: "" }));
-
-    case "message_update": {
-      const ae = event.assistantMessageEvent;
-      if (ae?.type === "text_delta") return updateSessionInState(state, sid, (s) => ({ ...s, streamText: s.streamText + ae.delta }));
-      return state;
-    }
+    // message_start / message_update(text_delta) 已移至 streamStore（ADR-017）——
+    // onServerMessage 直接写 streamStore，不 dispatch。这里不再处理，走 default return state。
 
     case "message_end":
       // pi 事件流会先推 user 的 message_start/end，再推 assistant。
       // user 消息已由 append_user_message 乐观追加，这里跳过避免重复。
-      if (event.message.role === "user") return updateSessionInState(state, sid, (s) => ({ ...s, streamText: "" }));
-      return updateSessionInState(state, sid, (s) => ({ ...s, streamText: "", messages: [...s.messages, event.message] }));
+      // streamText 的清空由 onServerMessage 调 streamStore.clearText 完成（见 ADR-017）。
+      if (event.message.role === "user") return state;
+      return updateSessionInState(state, sid, (s) => ({ ...s, messages: [...s.messages, event.message] }));
 
     case "tool_execution_start":
       return updateSessionInState(state, sid, (s) => ({
         ...s,
-        tools: { ...s.tools, [event.toolCallId]: { name: event.toolName, args: event.args, status: "running", output: "" } },
+        tools: { ...s.tools, [event.toolCallId]: { name: event.toolName, args: event.args, status: "running" } },
       }));
 
-    case "tool_execution_update": {
-      const partial = event.partialResult?.content?.map((c: any) => c.text).join("") ?? "";
-      return updateSessionInState(state, sid, (s) => ({
-        ...s,
-        tools: { ...s.tools, [event.toolCallId]: { ...s.tools[event.toolCallId], output: partial } },
-      }));
-    }
+    // tool_execution_update 的流式 output 已移至 streamStore（ADR-017）——
+    // onServerMessage 直接写 streamStore.setToolOutput，不 dispatch。这里走 default return state。
 
     case "tool_execution_end": {
       const patch = (event.result?.details as any)?.patch as string | undefined;

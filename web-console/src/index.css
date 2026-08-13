@@ -104,3 +104,89 @@ body {
   .pt-safe { padding-top: calc(env(safe-area-inset-top) + 0.5rem); }
   .pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem); }
 }
+
+/* ============ 代码语法高亮 token 配色（rehype-highlight / highlight.js，ADR-014）============
+ * highlight.js 给代码 token 加 .hljs-* class；这里按 [data-theme] 各配一套 GitHub 风格配色。
+ * 不用 Tailwind darkMode（主题由 CSS 变量驱动，ADR-010）。
+ * .hljs 背景设为 transparent——容器背景由 pre 的 bg-surface（inline）或 modal（block）提供。 */
+
+/* --- 深色（GitHub Dark 风，配深色底 #08090A）--- */
+[data-theme="dark"] .hljs { color: #c9d1d9; background: transparent; }
+[data-theme="dark"] .hljs-comment,
+[data-theme="dark"] .hljs-quote { color: #8b949e; font-style: italic; }
+/* 关键字 / 字面量 / 标签名 */
+[data-theme="dark"] .hljs-keyword,
+[data-theme="dark"] .hljs-selector-tag,
+[data-theme="dark"] .hljs-literal,
+[data-theme="dark"] .hljs-doctag,
+[data-theme="dark"] .hljs-meta .hljs-keyword { color: #ff7b72; }
+/* 字符串 / 正则 / diff 新增行 */
+[data-theme="dark"] .hljs-string,
+[data-theme="dark"] .hljs-regexp,
+[data-theme="dark"] .hljs-addition,
+[data-theme="dark"] .hljs-char.escape_ { color: #a5d6ff; }
+/* 数字 / 符号 */
+[data-theme="dark"] .hljs-number,
+[data-theme="dark"] .hljs-symbol,
+[data-theme="dark"] .hljs-bullet { color: #79c0ff; }
+/* 函数名 / 标题 / section */
+[data-theme="dark"] .hljs-title,
+[data-theme="dark"] .hljs-title.function_,
+[data-theme="dark"] .hljs-title.class_,
+[data-theme="dark"] .hljs-section { color: #d2a8ff; }
+/* 类型 / 属性 / 内建 / 变量 */
+[data-theme="dark"] .hljs-type,
+[data-theme="dark"] .hljs-attr,
+[data-theme="dark"] .hljs-attribute,
+[data-theme="dark"] .hljs-property,
+[data-theme="dark"] .hljs-built_in,
+[data-theme="dark"] .hljs-variable,
+[data-theme="dark"] .hljs-template-variable,
+[data-theme="dark"] .hljs-class .hljs-title { color: #ffa657; }
+/* XML/HTML 标签名 */
+[data-theme="dark"] .hljs-name,
+[data-theme="dark"] .hljs-tag { color: #7ee787; }
+/* meta */
+[data-theme="dark"] .hljs-meta { color: #8b949e; }
+/* diff 删除行 */
+[data-theme="dark"] .hljs-deletion { color: #ffa198; background: rgba(255, 129, 130, 0.15); }
+[data-theme="dark"] .hljs-addition { color: #a5d6ff; background: rgba(99, 237, 142, 0.12); }
+/* 强调 */
+[data-theme="dark"] .hljs-emphasis { font-style: italic; }
+[data-theme="dark"] .hljs-strong { font-weight: 700; }
+
+/* --- 浅色（GitHub Light 风）--- */
+[data-theme="light"] .hljs { color: #24292f; background: transparent; }
+[data-theme="light"] .hljs-comment,
+[data-theme="light"] .hljs-quote { color: #6e7781; font-style: italic; }
+[data-theme="light"] .hljs-keyword,
+[data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-literal,
+[data-theme="light"] .hljs-doctag,
+[data-theme="light"] .hljs-meta .hljs-keyword { color: #cf222e; }
+[data-theme="light"] .hljs-string,
+[data-theme="light"] .hljs-regexp,
+[data-theme="light"] .hljs-addition,
+[data-theme="light"] .hljs-char.escape_ { color: #0a3069; }
+[data-theme="light"] .hljs-number,
+[data-theme="light"] .hljs-symbol,
+[data-theme="light"] .hljs-bullet { color: #0550ae; }
+[data-theme="light"] .hljs-title,
+[data-theme="light"] .hljs-title.function_,
+[data-theme="light"] .hljs-title.class_,
+[data-theme="light"] .hljs-section { color: #8250df; }
+[data-theme="light"] .hljs-type,
+[data-theme="light"] .hljs-attr,
+[data-theme="light"] .hljs-attribute,
+[data-theme="light"] .hljs-property,
+[data-theme="light"] .hljs-built_in,
+[data-theme="light"] .hljs-variable,
+[data-theme="light"] .hljs-template-variable,
+[data-theme="light"] .hljs-class .hljs-title { color: #953800; }
+[data-theme="light"] .hljs-name,
+[data-theme="light"] .hljs-tag { color: #116329; }
+[data-theme="light"] .hljs-meta { color: #6e7781; }
+[data-theme="light"] .hljs-deletion { color: #82071e; background: rgba(248, 81, 73, 0.12); }
+[data-theme="light"] .hljs-addition { color: #0a3069; background: rgba(63, 185, 80, 0.12); }
+[data-theme="light"] .hljs-emphasis { font-style: italic; }
+[data-theme="light"] .hljs-strong { font-weight: 700; }

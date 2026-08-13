@@ -66,11 +66,17 @@ src/
     ├── ChatPanel.tsx         ← 含 input/cmdIndex/filteredCmds + CommandPalette 渲染
     ├── CommandPalette.tsx    ← 纯受控（props: cmds/cmdIndex/onSelect），不管焦点
     ├── FileViewer.tsx
+    ├── Markdown.tsx          ← react-markdown + remark-gfm + rehype-highlight（ADR-013/014），被 LazyMarkdown 懒加载
+    ├── LazyMarkdown.tsx      ← React.lazy 包装 Markdown，拆独立 chunk 首屏不加载（ADR-015）
     ├── pickers/{Modal,ModelPicker,ThinkingPicker,SessionPicker,TreePicker}.tsx
     ├── MessageView.tsx / FileTree.tsx / EntryTree.tsx   ← 已有
 ```
 
 ## 4. 状态模型（reducer）
+
+> **两套状态源**（[ADR-017](../adr/017-stream-data-external-store.md)）：低频状态（会话/消息/工具开关/UI 等）在本节 reducer 的 `AppState`；
+> 高频流式数据（`streamText` + 工具流式 `output`）在独立的 `useSyncExternalStore` 外部 store（`src/state/streamStore.ts`），
+> 按 sessionId 细粒度订阅——避免 token 级更新（每秒数十次）触发整树重渲染。`SessionState.streamText` 与 `ToolInfo.output` 字段已移除。
 
 ```ts
 interface AppState {
@@ -152,6 +158,8 @@ WS onmessage ──► useWebSocket:
             └─ 调 App 传入的回调   // 回调内部 wsClient.send（回调派发式，见上）
 ```
 
+**agent_event 分流**（[ADR-017](../adr/017-stream-data-external-store.md)）：`message_start` / `message_update`(text_delta) / `tool_execution_update` 三个高频事件直接写 `streamStore`（外部 store），**不 dispatch**——避免 token 级更新触发整树重渲染；`message_end` 先清 `streamStore` 再 dispatch（落定消息）。低频事件正常 dispatch。
+
 **关键**：所有 WS 主动 send（补发 list_dir/list_commands、重连重订阅）集中在 `useWebSocket` hook 层；reducer 纯函数只管状态。**用户驱动的 send**（prompt/abort/命令/picker 选择）由组件调 **App 传入的回调**（回调内部 `wsClient.send`）——即回调派发式，组件不直接持有 wsClient，更纯、可测（与 §6「组件不管 WS」一致）。
 
 ## 6. 组件职责边界
@@ -160,7 +168,7 @@ WS onmessage ──► useWebSocket:
 |------|-------|------|---------|
 | `App` | — | useReducer + useWebSocket + 组合布局 | 不含业务逻辑 |
 | `Sidebar` | sessions/order/active + 回调 | 目录、会话列表、文件树 | 不管 WS |
-| `ChatPanel` | `{ sessionId, session }` + send/abort 回调 | 消息流 + 输入（含 input/cmdIndex/filteredCmds 局部态）+ textarea onKeyDown 分流 | 不管 picker |
+| `ChatPanel` | `{ sessionId, session }` + send/abort 回调 | **虚拟列表消息流**（ADR-018，react-virtuoso）+ 输入（含 input/cmdIndex/filteredCmds 局部态）+ textarea onKeyDown 分流 | 不管 picker |
 | `CommandPalette` | `cmds`/`cmdIndex`/`onSelect` | **纯受控**渲染高亮，不管焦点/不持状态 | 不发 WS、不管 onKeyDown |
 | `pickers/Modal` | open/onClose/children | 通用模态骨架 | 不管业务内容 |
 | 各 Picker | 数据 + onSelect | 渲染选项 + 回调 | 不含模态骨架 |
@@ -223,10 +231,12 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"; // age
 
 ## 9. 已知缺陷（重构时记录，是否本次修复待定）
 
-- **scroll 强制拉底**：`useEffect [messages, streamText]` 在用户向上翻历史时拉回底部。迁入 ChatPanel 时至少记录；理想加「用户手动滚动则暂停自动拉底」。
+- ~~**scroll 强制拉底**~~：✅ 已由虚拟列表的 `followOutput` 解决（ADR-018）——用户不在底部时不自动滚动，在底部时跟随新消息/流式输出。
 - **重连焦点跳转**：onopen 重订阅每个会话，每个 session_opened 都 setActive，最后一个覆盖用户当前查看的会话。**Step 2a 修复**（session_opened 仅在「新会话」时 setActive）。
 
 ## 10. 已记 ADR
 
 - [ADR-007](../adr/007-statemanager-usereducer.md)：状态管理选 useReducer（零依赖）而非 zustand；迁移触发条件。
 - [ADR-008](../adr/008-stateref-for-reconnect.md)：保留单一 stateRef 供重连读快照（纯 dispatch 理论 vs 实用 ref 的取舍）。
+- [ADR-017](../adr/017-stream-data-external-store.md)：流式数据（streamText + 工具 output）移出 reducer 到 useSyncExternalStore 外部 store，根治流式输出时的全局重渲染卡顿。
+- [ADR-018](../adr/018-message-list-virtualization.md)：消息列表虚拟化（react-virtuoso），只渲染可见的 ~10 条消息，根治大量消息（470+）首次/重新渲染的手机卡顿。

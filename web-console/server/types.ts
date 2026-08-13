@@ -24,6 +24,7 @@ export type ClientMessage =
   | { type: "list_models"; sessionId: string }
   | { type: "set_model"; sessionId: string; provider: string; modelId: string }
   | { type: "compact"; sessionId: string }
+  | { type: "reload_session"; sessionId: string } // 重载当前会话的扩展/skills/prompts（保留对话历史）
   | { type: "set_thinking"; sessionId: string; level: string }
   | { type: "list_sessions"; cwd: string }
   | { type: "open_history"; cwd: string; path: string }
@@ -35,8 +36,8 @@ export type ClientMessage =
 // 后端 → 前端
 export type ServerMessage =
   | { type: "dirs"; dirs: string[] }
-  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean }[] }
-  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null; timing?: { loaderMs: number; createMs: number; totalMs: number } }
+  | { type: "sessions_active"; sessions: { sessionId: string; cwd: string; sessionFile: string | undefined; streaming: boolean; summary: string; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity | null }[] }
+  | { type: "session_opened"; sessionId: string; cwd: string; sessionFile: string | undefined; messages: unknown[]; messageTotal: number; messageOffset: number; model: ModelIdentity; contextUsage: ContextUsagePayload | null; dirContent: { name: string; type: "file" | "dir"; path: string }[]; commands: { name: string; description?: string }[]; timing?: { loaderMs: number; createMs: number; totalMs: number } }
   | { type: "session_closed"; sessionId: string }
   | { type: "agent_event"; sessionId: string; event: unknown }
   | { type: "file_content"; path: string; content: string }
@@ -49,6 +50,9 @@ export type ServerMessage =
   | { type: "context_usage"; sessionId: string; usage: ContextUsagePayload }
   | { type: "sessions_list"; cwd: string; sessions: { path: string; name?: string; modified: string; messageCount: number; firstMessage: string }[] }
   | { type: "entries_tree"; sessionId: string; tree: EntryTreeNode[]; leafId: string | null }
+  | { type: "reloaded"; sessionId: string; commands: { name: string; description?: string }[] } // reload 完成，带刷新后的命令列表
+  | { type: "ui_notify"; sessionId: string; message: string; level: "info" | "warning" | "error" }
+  | { type: "ui_set_status"; sessionId: string; key: string; text: string | undefined }
   | { type: "restarting"; sessionId: string }
   | { type: "error"; message: string; sessionId?: string }
   | { type: "earlier_messages"; sessionId: string; messages: unknown[]; offset: number; hasMore: boolean }; // 分页：更早的消息片段

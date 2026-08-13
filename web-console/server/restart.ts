@@ -70,16 +70,20 @@ export function tryTriggerRestart(): boolean {
  * detached + unref：父进程退出后子进程继续运行。
  */
 export function spawnReplacement(): void {
-  // 用绝对路径，不依赖 process.cwd()（服务可能不从 web-console 目录启动）。
-  // tsx 的 package.json exports 不暴露 ./dist/cli.mjs 子路径，不能用 require.resolve，
-  // 直接构造文件路径（import.meta.dirname = server/，tsx 在 ../node_modules/）。
   const webConsoleDir = path.resolve(import.meta.dirname, "..");
   const serverEntry = path.resolve(import.meta.dirname, "index.ts");
   const tsxCli = path.join(webConsoleDir, "node_modules", "tsx", "dist", "cli.mjs");
+  // 接班进程日志：stdio 不能 ignore——否则接班进程崩溃（EADDRINUSE/启动失败/运行时错误）完全无日志可查，
+  // 服务静默消失（本次崩溃就是这个问题）。重定向 stdout/stderr 到日志文件，下次崩溃能诊断。
+  ensureTempDir();
+  const logPath = path.join(TEMP_DIR, "replacement.log");
+  const logFd = fs.openSync(logPath, "a");
+  fs.writeFileSync(logFd, `\n=== spawn @ ${new Date().toISOString()} ===\n`);
+  // windowsHide: true：Windows 上 detached 子进程默认弹控制台窗口，隐藏它。
   const child = spawn(
     process.execPath,
     [tsxCli, serverEntry],
-    { detached: true, stdio: "ignore", cwd: webConsoleDir, env: process.env },
+    { detached: true, stdio: ["ignore", logFd, logFd], cwd: webConsoleDir, env: process.env, windowsHide: true },
   );
   child.unref();
 }

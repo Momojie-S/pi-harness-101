@@ -9,7 +9,9 @@
   "pi": {
     "extensions": [
       "extensions/chrome-devtools/index.ts",
-      "extensions/personal-context/index.ts"
+      "extensions/personal-context/index.ts",
+      "extensions/goal/index.ts",
+      "extensions/zhipu-tools/index.ts"
     ],
     "skills": ["skills"],
     "prompts": ["prompts"],

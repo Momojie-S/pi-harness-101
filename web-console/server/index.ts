@@ -5,7 +5,9 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SessionStore } from "./session-store.ts";
 import { handleConnection } from "./ws.ts";
-import { recoverPendingSession } from "./restart.ts";
+import { recoverPendingSession, TEMP_DIR } from "./restart.ts";
+import { writeHeapSnapshot } from "node:v8";
+import fs from "node:fs";
 
 const PORT = Number(process.env.PORT ?? 3000);
 // 前端构建产物（vite build → dist/）。生产模式下后端直接 serve，单端口对外。
@@ -113,6 +115,32 @@ async function main() {
       if (released > 0) console.log(`[web-console] 空闲回收 ${released} 个会话`);
     }, IDLE_SWEEP_INTERVAL);
   }
+
+  // 内存监控 + 堆快照（定位 OOM 增长项）：
+  // - 每 30s 记 memoryUsage（轻量，看增长曲线）
+  // - heapUsed 超 1.5GB 后，每再涨 500MB 抓一份完整堆快照（最多 5 份），覆盖 OOM 前趋势。
+  //   writeHeapSnapshot 对大堆慢（秒级阻塞），故只在危险水位抓，不频繁抓。
+  // - 启动时清理上次遗留的快照（防磁盘堆积）。快照在 %TEMP%\pi-web-console\heap-*.heapsnapshot。
+  try {
+    for (const f of fs.readdirSync(TEMP_DIR)) {
+      if (f.startsWith("heap-") && f.endsWith(".heapsnapshot")) fs.unlinkSync(path.join(TEMP_DIR, f));
+    }
+  } catch { /* 目录不存在等，忽略 */ }
+  const SNAPSHOT_START = 1.5 * 1024 ** 3;
+  let nextSnapshotAt = SNAPSHOT_START;
+  let snapshotCount = 0;
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+    console.log(`[mem] heap=${heapMB}MB rss=${Math.round(mem.rss / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB`);
+    if (snapshotCount < 5 && mem.heapUsed >= nextSnapshotAt) {
+      snapshotCount++;
+      const file = path.join(TEMP_DIR, `heap-${snapshotCount}-${heapMB}MB-${Date.now()}.heapsnapshot`);
+      console.log(`[mem] 抓堆快照 #${snapshotCount} @${heapMB}MB → ${path.basename(file)}`);
+      try { writeHeapSnapshot(file); } catch (e) { console.error("[mem] 快照失败:", e instanceof Error ? e.message : e); }
+      nextSnapshotAt += 0.5 * 1024 ** 3;
+    }
+  }, 30_000);
 
   // listen 加 EADDRINUSE 重试：重启时老进程刚退出、端口释放有短暂窗口。
   // 有限重试（最多 10 次），避免端口被其他进程永久占用时无限循环。

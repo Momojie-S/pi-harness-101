@@ -209,14 +209,26 @@ export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, 
  */
 function StreamingText({ sessionId }: { sessionId: string }) {
   const streamText = useStreamText(sessionId);
-  // 流式跟随：nearBottom（< 500px）时滚到底。用户主动向上滚远了则不跟随。
+  // 缓存 scroller DOM（避免每次 token 都 querySelector）+ rAF 节流（合并一帧内多次 token 为一次滚动）。
+  // 此前每次 token 都 querySelector + 读 scrollHeight（强制布局）+ 写 scrollTop（再布局）= layout thrashing，
+  // 每秒几十次，手机上严重卡顿。rAF 合并 + 读写在同一回调，浏览器一帧只布局一次。
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const rafRef = useRef<number | null>(null);
   useEffect(() => {
     if (!streamText) return;
-    const scroller = document.querySelector('[data-testid="virtuoso-scroller"]') as HTMLElement | null;
-    if (scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 500) {
-      scroller.scrollTop = scroller.scrollHeight;
-    }
+    if (!scrollerRef.current) scrollerRef.current = document.querySelector('[data-testid="virtuoso-scroller"]');
+    // 已有 pending rAF 则跳过（合并本帧内后续 token，一帧只滚一次）
+    if (rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const scroller = scrollerRef.current;
+      if (scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 500) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
   }, [streamText, sessionId]);
+  // 卸载时取消未执行的 rAF，防泄漏
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); }, []);
   if (!streamText) return null;
   return (
     <div className="max-w-[92%] py-1.5">

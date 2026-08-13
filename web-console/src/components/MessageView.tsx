@@ -7,7 +7,10 @@ import { LazyMarkdown as Markdown } from "./LazyMarkdown.tsx";
 interface Props {
   message: ChatMessage;
   onOpenFile: (path: string) => void;
-  patches: Record<string, string>;
+  /** 该消息对应的 diff patch（仅 edit/write 工具结果有，按 toolCallId 索引取出）。
+   *  单值而非整个 patches Record：避免任一工具完成更新 session.patches 时，
+   *  所有 MessageView 的 patches prop 引用全变、memo 全部失效（几百条重渲染）。 */
+  patch?: string;
 }
 
 interface TextBlock { type: "text"; text: string }
@@ -31,10 +34,12 @@ function toBlocks(content: unknown): ContentBlock[] {
   return (Array.isArray(content) ? content : []) as ContentBlock[];
 }
 
-// memo：message/onOpenFile/patches 引用不变时跳过重渲染。消息对象在 reducer 里保持引用稳定
+// memo：message/onOpenFile/patch 引用不变时跳过重渲染。消息对象在 reducer 里保持引用稳定
 //（message_end 用展开运算符 [...messages, new] 保留旧引用），onOpenFile 由 App useCallback 稳定，
-// patches 仅 edit/write 工具结果时变。这是消除「540+ 条消息每次 reducer 更新都重新 markdown 解析」的关键。
-export const MessageView = memo(function MessageView({ message, onOpenFile, patches }: Props) {
+// patch 是单值（ChatPanel 按 toolCallId 取出），只在「这条消息是 edit/write 且有 diff」时变——
+// 其他工具完成更新 session.patches 不再击穿本条 memo。这是消除「540+ 条消息每次 reducer 更新都重新
+// markdown 解析」的关键（旧实现传整个 patches Record，任一工具完成即全部 memo 失效）。
+export const MessageView = memo(function MessageView({ message, onOpenFile, patch }: Props) {
   // 系统错误消息：红色提示，按时间顺序在消息流中显示（和 TUI 一致）
   if (message.role === "system-error") {
     return (
@@ -76,7 +81,8 @@ export const MessageView = memo(function MessageView({ message, onOpenFile, patc
     const isError = message.isError;
     const isRead = message.toolName === "read";
     const isEdit = message.toolName === "edit" || message.toolName === "write";
-    const patch = isEdit ? patches[message.toolCallId] : undefined;
+    // patch 直接用 prop（ChatPanel 按 message.toolCallId 从 session.patches 取出）；
+    // 非 edit 或无 diff 时为 undefined。不再在此访问整个 patches Record。
     const text = blocks.map((b) => "text" in b ? b.text : "").join("\n");
     return (
       <div className="rounded-lg border bg-surface p-3 text-xs">

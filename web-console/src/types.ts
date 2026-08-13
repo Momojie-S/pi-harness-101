@@ -78,6 +78,8 @@ export interface SessionState {
   messageTotal: number;
   /** 当前已加载最早消息在完整列表的索引（分页；0 表示已加载全部历史） */
   messageOffset: number;
+  /** Virtuoso firstItemIndex（prepend 计数，从 0 递增；不用 1M-messageOffset 大值，会让 Virtuoso 误算总 item 数导致加载循环） */
+  prependCount: number;
   messages: ChatMessage[];
   // streamText 已移至 streamStore（ADR-017），用 useStreamText(sessionId) 订阅
   streaming: boolean;

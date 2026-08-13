@@ -37,7 +37,7 @@ export interface AppState {
 const DIR_SESSIONS_PAGE = 20;
 
 export function newSessionState(cwd: string): SessionState {
-  return { cwd, sessionFile: undefined, messageTotal: 0, messageOffset: 0, messages: [], streaming: false, compacting: false, retrying: false, steeringQueue: [], restored: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), commands: [], model: null, contextUsage: null, extensionStatuses: {} };
+  return { cwd, sessionFile: undefined, messageTotal: 0, messageOffset: 0, prependCount: 0, messages: [], streaming: false, compacting: false, retrying: false, steeringQueue: [], restored: false, tools: {}, patches: {}, dirContents: {}, expandedDirs: new Set(), commands: [], model: null, contextUsage: null, extensionStatuses: {} };
 }
 
 export const initialState: AppState = {
@@ -136,7 +136,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
       const isNew = !existing;
       // 后端预取了根目录 + 命令（省 2 次 WS 往返），直接填入 dirContents / commands
       const session = existing
-        ? { ...existing, cwd: action.cwd, sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, dirContents: { [action.cwd]: action.dirContent }, commands: action.commands, extensionStatuses: {}, streaming: false, tools: {}, restored: false }
+        ? { ...existing, cwd: action.cwd, sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, dirContents: { [action.cwd]: action.dirContent }, commands: action.commands, extensionStatuses: {}, streaming: false, tools: {}, restored: false, prependCount: 0 }
         : { ...newSessionState(action.cwd), sessionFile: action.sessionFile, messages: action.messages, messageTotal: action.messageTotal, messageOffset: action.messageOffset, model: action.model, contextUsage: action.contextUsage, dirContents: { [action.cwd]: action.dirContent }, commands: action.commands };
       return {
         ...state,
@@ -220,6 +220,7 @@ export function sessionReducer(state: AppState, action: Action): AppState {
         ...s,
         messages: [...action.messages, ...s.messages],
         messageOffset: action.offset,
+        prependCount: s.prependCount + action.messages.length,
       }));
 
     case "entries_tree":

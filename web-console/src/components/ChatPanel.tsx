@@ -83,11 +83,13 @@ export function ChatPanel({ sessionId, session, sessionOrderCount, globalError, 
           ref={virtuosoRef}
           className="min-h-0 flex-1"
           data={items}
-          firstItemIndex={1_000_000 - (session.messageOffset || 0)}
+          firstItemIndex={session.prependCount || 0}
           computeItemKey={(_, item) => `${item.timestamp}-${item.role}`}
           itemContent={(_, item) => (
             <div className="px-3 py-1.5 lg:px-4 lg:py-2">
-              <MessageView message={item} onOpenFile={onOpenFile} patches={session.patches} />
+              {/* 按 toolCallId 取单值 patch 传给 MessageView（而非整个 patches Record）——
+                  避免任一 edit/write 完成更新 session.patches 时，所有 MessageView memo 失效。 */}
+              <MessageView message={item} onOpenFile={onOpenFile} patch={"toolCallId" in item ? session.patches[item.toolCallId] : undefined} />
             </div>
           )}
           components={{

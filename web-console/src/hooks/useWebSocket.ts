@@ -95,7 +95,9 @@ function onServerMessage(msg: ServerMessage, dispatch: (a: Action) => void) {
       }
       // —— 低频事件 → reducer ——
       dispatch({ type: "agent_event", sessionId: sid, event });
-      // 副作用：tool_end 后 1.5s 删卡片
+      // 副作用：tool_end 后 1.5s 删卡片。setTimeout 在 session 已关闭/切换时会 dispatch 到不存在的
+      // session，但 reducer 的 updateSessionInState 首行 `if (!old) return state` 安全忽略，无泄漏
+      //（1.5s 后自动执行释放）。故无需跟踪定时器或传 stateRef 检查。
       if (event.type === "tool_execution_end") {
         const tcid = event.toolCallId;
         setTimeout(() => dispatch({ type: "drop_tool", sessionId: sid, toolCallId: tcid }), 1500);

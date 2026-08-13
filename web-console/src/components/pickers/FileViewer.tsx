@@ -73,9 +73,12 @@ export function FileViewer({ fileViewer, pendingFile, onClose }: FileViewerProps
   const lang = LANG_MAP[key];
   // 正在加载（read_file pending）：点击文件后立即弹出 loading，内容到达后填充
   const isLoading = !!fileViewer && pendingFile === path;
+  // 超大代码文件降级纯文本：rehype-highlight 对大文件是秒级 long task（词法分析），
+  // 后端放行到 1MB，直接高亮会卡死查看器。>100KB 不高亮，避免主线程阻塞。
+  const tooBig = content.length > 100_000;
 
   // 标题栏模式标签
-  const modeLabel = isMd ? "Markdown" : lang ? lang : "纯文本";
+  const modeLabel = isMd ? "Markdown" : (lang && !tooBig) ? lang : "纯文本";
 
   return (
     <Modal open={!!fileViewer} onClose={onClose} bodyClass="flex h-[80vh] w-full max-w-4xl flex-col rounded-lg border-strong bg-surface-elevated shadow-lg">
@@ -98,8 +101,8 @@ export function FileViewer({ fileViewer, pendingFile, onClose }: FileViewerProps
             <div className="flex-1 overflow-auto px-5 py-4">
               <Markdown variant="block">{content}</Markdown>
             </div>
-          ) : lang ? (
-            // 代码文件：包成 fenced block，按语言高亮
+          ) : lang && !tooBig ? (
+            // 代码文件：包成 fenced block，按语言高亮（>100KB 降级纯文本，见 tooBig）
             <div className="flex-1 overflow-auto px-5 py-4">
               <Markdown variant="block">{`${fenceFor(content)}${lang}\n${content}\n`}</Markdown>
             </div>

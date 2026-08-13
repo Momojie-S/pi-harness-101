@@ -22,7 +22,15 @@ export function connectWs(): WsClient {
   const open = () => {
     socket = new WebSocket(WS_URL);
     socket.onopen = () => openCb?.();
-    socket.onmessage = (e) => messageCb?.(JSON.parse(e.data));
+    socket.onmessage = (e) => {
+      // try/catch 必需：frp/nginx 可能返回非 JSON（HTML 错误页、半截帧），
+      // 裸 JSON.parse 会抛未捕获异常（污染控制台 + 漏处理该帧 + dispatch 冒泡）。
+      try {
+        messageCb?.(JSON.parse(e.data));
+      } catch (err) {
+        console.error("[ws] 消息解析失败（可能非 JSON，如代理错误页）:", err);
+      }
+    };
     socket.onclose = () => {
       if (!closed) reconnectTimer = setTimeout(open, 2000);
     };

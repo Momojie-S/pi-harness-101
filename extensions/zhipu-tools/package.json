@@ -1,0 +1,9 @@
+{
+  "name": "pi-zhipu-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "智谱 GLM Coding Plan 工具集：视觉理解(8) + 联网搜索 + 网页读取 + 开源仓库(3) = 13 工具",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

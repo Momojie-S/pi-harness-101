@@ -1,5 +1,7 @@
 # pi-harness-101
 
+> ⚠️ **本仓库已废弃（2026-08-14）**：我已从 pi 迁移到 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)，新的学习工坊在 **[deepseek-harness-101](https://github.com/Momojie-S/deepseek-harness-101)**（含 MCP 配置指南、插件开发指南、[dsh-workspace-mcp](https://github.com/Momojie-S/dsh-workspace-mcp) / [dsh-workspace-env](https://github.com/Momojie-S/dsh-workspace-env) 两个插件）。本仓库仅作历史存档，不再更新。
+
 学习 [pi coding agent](https://github.com/earendil-works/pi-coding-agent) 的 harness 架构，打造最适合自己的 coding agent。
 
 ## 初衷
